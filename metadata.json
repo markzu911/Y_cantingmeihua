@@ -1,0 +1,6 @@
+{
+  "name": "餐厅一键美化",
+  "description": "上传餐厅图片，AI智能识别布局和风格，一键美化墙面、桌面、地面等，支持自定义比例、光影和清晰度。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
