@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2 } from 'lucide-react';
+import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins } from 'lucide-react';
 import { analyzeRestaurantImage, beautifyRestaurantImage, AnalysisResult } from './lib/gemini';
 
 // Add type definition for window.aistudio
@@ -10,6 +10,17 @@ declare global {
       openSelectKey: () => Promise<void>;
     };
   }
+}
+
+interface SaasUserInfo {
+  name: string;
+  enterprise: string;
+  integral: number;
+}
+
+interface SaasToolInfo {
+  name: string;
+  integral: number;
 }
 
 export default function App() {
@@ -33,7 +44,48 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  // SaaS Integration State
+  const [userId, setUserId] = useState<string | null>(null);
+  const [toolId, setToolId] = useState<string | null>(null);
+  const [userInfo, setUserInfo] = useState<SaasUserInfo | null>(null);
+  const [toolInfo, setToolInfo] = useState<SaasToolInfo | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle postMessage for SAAS_INIT
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'SAAS_INIT') {
+        const { userId: uid, toolId: tid } = event.data;
+        if (uid && uid !== "null" && uid !== "undefined") setUserId(uid);
+        if (tid && tid !== "null" && tid !== "undefined") setToolId(tid);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  // Launch Phase: Get Initial Data
+  useEffect(() => {
+    const fetchLaunchData = async () => {
+      if (!userId || !toolId) return;
+      try {
+        const response = await fetch('/api/tool/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const result = await response.json();
+        if (result.success) {
+          setUserInfo(result.data.user);
+          setToolInfo(result.data.tool);
+        }
+      } catch (err) {
+        console.error('Launch failed:', err);
+      }
+    };
+    fetchLaunchData();
+  }, [userId, toolId]);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -76,6 +128,27 @@ export default function App() {
 
   const handleAnalyze = async () => {
     if (!originalImage) return;
+    
+    // Verify Phase
+    if (userId && toolId) {
+      setIsAnalyzing(true);
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setError(verifyData.message || '积分不足');
+          setIsAnalyzing(false);
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    }
+
     setIsAnalyzing(true);
     setError(null);
     try {
@@ -105,6 +178,23 @@ export default function App() {
       );
       setBeautifiedImage(resultImage);
       setHistory(prev => [resultImage, ...prev]);
+
+      // Consume Phase
+      if (userId && toolId) {
+        try {
+          const consumeRes = await fetch('/api/tool/consume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId })
+          });
+          const consumeData = await consumeRes.json();
+          if (consumeData.success) {
+            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+          }
+        } catch (err) {
+          console.error('Consume failed:', err);
+        }
+      }
     } catch (err: any) {
       const errorMsg = err.message || '';
       if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('Requested entity was not found')) {
@@ -202,6 +292,15 @@ export default function App() {
               <Wand2 className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-xl font-bold tracking-tight text-slate-900">餐厅一键美化</h1>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {userInfo && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-2xl border border-slate-200">
+                <Coins className="w-4 h-4 text-amber-500" />
+                <span className="text-sm font-bold text-slate-700">积分: {userInfo.integral}</span>
+              </div>
+            )}
           </div>
         </div>
       </header>
