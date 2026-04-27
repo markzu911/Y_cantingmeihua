@@ -9,26 +9,6 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
-export async function callGemini(model: string, payload: any) {
-  const response = await fetch("/api/gemini", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      payload,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "Gemini call failed");
-  }
-
-  return response.json();
-}
-
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
   const response = await fetch("/api/analyze", {
     method: "POST",
