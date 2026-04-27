@@ -295,10 +295,21 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            {userInfo && (
-              <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-2xl border border-slate-200">
-                <Coins className="w-4 h-4 text-amber-500" />
-                <span className="text-sm font-bold text-slate-700">积分: {userInfo.integral}</span>
+            {userInfo ? (
+              <div className="flex items-center gap-3">
+                <div className="hidden sm:flex flex-col items-end mr-1">
+                  <span className="text-xs font-bold text-slate-900">{userInfo.name}</span>
+                  <span className="text-[10px] text-slate-500">{userInfo.enterprise}</span>
+                </div>
+                <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-2xl border border-slate-200 shadow-sm">
+                  <Coins className="w-4 h-4 text-amber-500" />
+                  <span className="text-sm font-bold text-slate-700">{userInfo.integral} 积分</span>
+                </div>
+              </div>
+            ) : userId && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-slate-100/50 rounded-2xl border border-slate-200 border-dashed">
+                <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+                <span className="text-sm font-medium text-slate-400">正在加载...</span>
               </div>
             )}
           </div>
