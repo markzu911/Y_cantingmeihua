@@ -1,5 +1,3 @@
-import { Type } from "@google/genai";
-
 export interface AnalysisResult {
   layout: string;
   style: string;
@@ -35,7 +33,7 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
             ],
           },
         ],
-        generationConfig: {
+        config: {
           responseMimeType: "application/json",
         },
       },
@@ -127,7 +125,7 @@ GENERAL CONSTRAINTS:
             ],
           },
         ],
-        generationConfig: {
+        config: {
           imageConfig: {
             aspectRatio: options.ratio,
             imageSize: options.resolution,
