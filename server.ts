@@ -22,10 +22,29 @@ async function startServer() {
   // Increase the payload size limit for base64 images
   app.use(express.json({ limit: '50mb' }));
 
-  // Debug middleware
+  // Debug middleware to log all requests
   app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
+    console.log(`[REQ] ${req.method} ${req.url}`);
     next();
+  });
+
+  // Handle potential SaaS proxy path prefix /ai-tool/:toolId/api/...
+  app.use((req, res, next) => {
+    if (req.url.startsWith('/ai-tool/')) {
+      const originalUrl = req.url;
+      const parts = req.url.split('/');
+      // Expected: /ai-tool/eb34.../api/analyze -> parts: ["", "ai-tool", "eb34...", "api", "analyze"]
+      if (parts.length >= 4) {
+        req.url = '/' + parts.slice(3).join('/');
+        console.log(`[REWRITE] ${originalUrl} -> ${req.url}`);
+      }
+    }
+    next();
+  });
+
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", time: new Date().toISOString() });
   });
 
   // SaaS Proxy logic
