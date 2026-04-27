@@ -25,7 +25,7 @@ async function startServer() {
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `http://aibigtree.com${targetPath}`;
+    const targetUrl = `https://tools.aibigtree.com${targetPath}`;
     try {
       const response = await axios({
         method: req.method,

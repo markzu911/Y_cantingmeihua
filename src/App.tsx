@@ -70,7 +70,7 @@ export default function App() {
     const fetchLaunchData = async () => {
       if (!userId || !toolId) return;
       try {
-        const response = await fetch('https://aibigtree.com/api/tool/launch', {
+        const response = await fetch('/api/tool/launch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -133,7 +133,7 @@ export default function App() {
     if (userId && toolId) {
       setIsAnalyzing(true);
       try {
-        const verifyRes = await fetch('https://aibigtree.com/api/tool/verify', {
+        const verifyRes = await fetch('/api/tool/verify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -182,7 +182,7 @@ export default function App() {
       // Consume Phase
       if (userId && toolId) {
         try {
-          const consumeRes = await fetch('https://aibigtree.com/api/tool/consume', {
+          const consumeRes = await fetch('/api/tool/consume', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, toolId })
