@@ -22,6 +22,12 @@ async function startServer() {
   // Increase the payload size limit for base64 images
   app.use(express.json({ limit: '50mb' }));
 
+  // Debug middleware
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+  });
+
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
     const targetUrl = `http://aibigtree.com${targetPath}`;
@@ -43,31 +49,37 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  // Generic Gemini API endpoint
+  // Generic Gemini API endpoint for frontend bridge
   app.post("/api/gemini", async (req, res) => {
     try {
       const { model, payload } = req.body;
       if (!model) {
         return res.status(400).json({ error: "Missing model" });
       }
+      if (!payload) {
+        return res.status(400).json({ error: "Missing payload" });
+      }
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      
+      // The new SDK @google/genai uses ai.models.generateContent
       const response = await ai.models.generateContent({
-        model: model || "gemini-2.0-flash",
+        model: model,
         ...payload
       });
       
-      // Attempt to return text, but handle if it's different
-      try {
-        const text = response.text;
-        res.json({ text });
-      } catch (e) {
-        res.json(response);
-      }
+      res.json({ 
+        text: response.text || "",
+        // Include full response just in case the frontend needs it
+        raw: response
+      });
     } catch (error: any) {
-      console.error("Gemini API error:", error);
+      console.error("Gemini bridge error:", error);
       res.status(500).json({ error: error.message });
     }
   });
+
+
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
