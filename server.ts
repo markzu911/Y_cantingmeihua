@@ -35,12 +35,18 @@ async function startServer() {
   // Robust API route handling
   const apiRouter = express.Router();
 
+  // Log all incoming requests early
+  app.use((req, res, next) => {
+    console.log(`[ACCESS] ${req.method} ${req.url} (original: ${req.originalUrl})`);
+    next();
+  });
+
   apiRouter.use((req, res, next) => {
     console.log(`[API Router] ${req.method} ${req.path}`);
     next();
   });
 
-  apiRouter.post("/gemini", async (req, res) => {
+  apiRouter.post(["/gemini", "/api/gemini"], async (req, res) => {
     console.log("Handling /api/gemini via router");
     try {
       const { model, payload, contents, config } = req.body;
@@ -106,6 +112,7 @@ async function startServer() {
   apiRouter.post("/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
   app.use("/api", apiRouter);
+  app.use("/", apiRouter); // Also mount at root in case proxy strips /api
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
