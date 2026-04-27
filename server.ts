@@ -67,13 +67,18 @@ async function startServer() {
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  app.post("/api/tool/gemini", (req, res, next) => {
+    // Forward /api/tool/gemini to /api/gemini logic
+    req.url = "/api/gemini";
+    next();
+  });
 
   // Generic Gemini API endpoint for frontend bridge
-  app.post("/api/gemini", async (req, res) => {
+  app.post(["/api/gemini", "*/api/gemini"], async (req, res) => {
     try {
       const { model, payload } = req.body;
       if (!model) {
-        return res.status(400).json({ error: "Missing model" });
+        return res.status(400).json({ error: "Missing model", receivedUrl: req.url });
       }
       if (!payload) {
         return res.status(400).json({ error: "Missing payload" });
@@ -81,7 +86,6 @@ async function startServer() {
 
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
-      // The new SDK @google/genai uses ai.models.generateContent
       const response = await ai.models.generateContent({
         model: model,
         ...payload
@@ -89,13 +93,24 @@ async function startServer() {
       
       res.json({ 
         text: response.text || "",
-        // Include full response just in case the frontend needs it
         raw: response
       });
     } catch (error: any) {
       console.error("Gemini bridge error:", error);
       res.status(500).json({ error: error.message });
     }
+  });
+
+  // Debug catch-all for unmatched API routes
+  app.all("/api/*", (req, res) => {
+    console.log(`[404-API] ${req.method} ${req.url}`);
+    res.status(404).json({
+      error: "API Route not found",
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      originalUrl: (req as any).originalUrl
+    });
   });
 
 

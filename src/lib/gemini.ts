@@ -10,7 +10,7 @@ export interface AnalysisResult {
 }
 
 export async function callGemini(model: string, payload: any) {
-  const response = await fetch("/api/gemini", {
+  const response = await fetch("/api/tool/gemini", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
