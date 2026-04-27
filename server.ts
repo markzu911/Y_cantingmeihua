@@ -43,6 +43,32 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
+  // Generic Gemini API endpoint
+  app.post("/api/gemini", async (req, res) => {
+    try {
+      const { model, payload } = req.body;
+      if (!model) {
+        return res.status(400).json({ error: "Missing model" });
+      }
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      const response = await ai.models.generateContent({
+        model: model || "gemini-2.0-flash",
+        ...payload
+      });
+      
+      // Attempt to return text, but handle if it's different
+      try {
+        const text = response.text;
+        res.json({ text });
+      } catch (e) {
+        res.json(response);
+      }
+    } catch (error: any) {
+      console.error("Gemini API error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
