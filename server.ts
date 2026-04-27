@@ -22,29 +22,8 @@ async function startServer() {
   // Increase the payload size limit for base64 images
   app.use(express.json({ limit: '50mb' }));
 
-  // SaaS Proxy logic
-  const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `http://aibigtree.com${targetPath}`;
-    try {
-      const response = await axios({
-        method: req.method,
-        url: targetUrl,
-        data: req.body,
-        headers: { 'Content-Type': 'application/json' }
-      });
-      res.status(response.status).json(response.data);
-    } catch (error: any) {
-      console.error(`Proxy error for ${targetPath}:`, error.message);
-      res.status(500).json({ success: false, error: "代理转发失败" });
-    }
-  };
-
-  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
-  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
-  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
-
-  // Generic Gemini API endpoint
-  app.post("/api/gemini", async (req, res) => {
+  // Generic Gemini API endpoint - defined FIRST
+  app.post(["/api/gemini", "/api/gemini/"], async (req, res) => {
     try {
       const { model, payload } = req.body;
       const apiKey = getGeminiApiKey();
@@ -79,6 +58,38 @@ async function startServer() {
     }
   });
 
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  app.use((req, res, next) => {
+    if (req.method === 'POST') {
+      console.log(`POST request to: ${req.url}`);
+    }
+    next();
+  });
+
+  // SaaS Proxy logic
+  const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
+    const targetUrl = `http://aibigtree.com${targetPath}`;
+    try {
+      const response = await axios({
+        method: req.method,
+        url: targetUrl,
+        data: req.body,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      res.status(response.status).json(response.data);
+    } catch (error: any) {
+      console.error(`Proxy error for ${targetPath}:`, error.message);
+      res.status(500).json({ success: false, error: "代理转发失败" });
+    }
+  };
+
+  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
@@ -93,6 +104,10 @@ async function startServer() {
     // Support Express v4 default setup
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
+    });
+    app.post('*', (req, res) => {
+      console.log(`Fallback 404 for POST ${req.url}`);
+      res.status(404).json({ error: `Route ${req.url} not found on this server` });
     });
   }
 

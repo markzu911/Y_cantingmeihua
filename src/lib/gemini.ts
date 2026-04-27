@@ -48,10 +48,21 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
   }
 
   const data = await response.json();
-  const result = JSON.parse(data.text);
+  let result;
+  try {
+    result = JSON.parse(data.text);
+  } catch (e) {
+    console.error("AI returned invalid JSON:", data.text);
+    throw new Error("AI 返回数据格式错误，请重试");
+  }
   
+  // 强制确保关键字段存在且为数组
+  if (!result.beautifyPoints || !Array.isArray(result.beautifyPoints)) {
+    result.beautifyPoints = ["墙面美化", "地面清洁", "桌面优化"];
+  }
+
   // 初始化推荐物品的启用状态
-  if (result.recommendedAdditions) {
+  if (result.recommendedAdditions && Array.isArray(result.recommendedAdditions)) {
     result.recommendedAdditions = result.recommendedAdditions.map((a: any) => ({ ...a, enabled: true }));
   } else {
     result.recommendedAdditions = [];
@@ -79,7 +90,7 @@ export async function beautifyRestaurantImage(
 
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
-${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
+${(analysis.beautifyPoints || []).map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
 
 MANDATORY BASELINE (ALWAYS APPLY):
 - FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
