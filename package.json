@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node dist/server.cjs",
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --platform=node --target=node18 --bundle --external:vite --outfile=dist/server.cjs",
+    "build": "vite build && esbuild server.ts --platform=node --target=node18 --bundle --outfile=dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
