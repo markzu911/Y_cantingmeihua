@@ -22,8 +22,15 @@ async function startServer() {
   // Increase the payload size limit for base64 images
   app.use(express.json({ limit: '50mb' }));
 
-  // Generic Gemini API endpoint - defined FIRST
-  app.post(["/api/gemini", "/api/gemini/"], async (req, res) => {
+  // Debug logger for ALL requests - MUST be before any routes
+  app.use((req, res, next) => {
+    console.log(`[DEBUG] ${req.method} ${req.url}`);
+    next();
+  });
+
+  // Generic Gemini API endpoint - be extremely permissive with the path
+  app.post(["/api/gemini", "/api/gemini/", "/api/gemini/analyze", "/api/gemini/beautify"], async (req, res) => {
+    console.log("Matched /api/gemini route");
     try {
       const { model, payload } = req.body;
       const apiKey = getGeminiApiKey();
