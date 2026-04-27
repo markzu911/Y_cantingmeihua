@@ -10,6 +10,27 @@ export interface AnalysisResult {
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
   const prompt = "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.";
 
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType,
+            },
+          },
+          {
+            text: prompt,
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: "application/json",
+    },
+  };
+
   const response = await fetch("/api/gemini", {
     method: "POST",
     headers: {
@@ -17,26 +38,7 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
     },
     body: JSON.stringify({
       model: "gemini-3-flash-preview",
-      payload: {
-        contents: [
-          {
-            parts: [
-              {
-                inlineData: {
-                  data: base64Image,
-                  mimeType: mimeType,
-                },
-              },
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: "application/json",
-        },
-      },
+      payload,
     }),
   });
 
@@ -102,6 +104,30 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType,
+            },
+          },
+          {
+            text: prompt,
+          },
+        ],
+      },
+    ],
+    config: {
+      imageConfig: {
+        aspectRatio: options.ratio,
+        imageSize: options.resolution,
+      }
+    }
+  };
+
   const response = await fetch("/api/gemini", {
     method: "POST",
     headers: {
@@ -109,29 +135,7 @@ GENERAL CONSTRAINTS:
     },
     body: JSON.stringify({
       model: "gemini-3.1-flash-image-preview",
-      payload: {
-        contents: [
-          {
-            parts: [
-              {
-                inlineData: {
-                  data: base64Image,
-                  mimeType: mimeType,
-                },
-              },
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-        config: {
-          imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
-          }
-        }
-      },
+      payload,
     }),
   });
 

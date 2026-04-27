@@ -1,16 +1,13 @@
 import express from "express";
-import path from "path";
-import fs from "fs";
-import { GoogleGenAI, Type } from "@google/genai";
-import dotenv from "dotenv";
+import { createServer as createViteServer } from "vite";
 import axios from "axios";
-
-dotenv.config({ override: true });
+import path from "path";
+import { GoogleGenAI } from "@google/genai";
 
 function getGeminiApiKey() {
-  const key = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']$/g, '');
-  if (!key || key === "MY_GEMINI_API_KEY" || key === "") {
-    throw new Error("GEMINI_API_KEY is not set or is still the placeholder. Please set a valid API key in the environmental variables.");
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("GEMINI_API_KEY environment variable is not set.");
   }
   return key;
 }
@@ -19,64 +16,71 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images
+  // Middleware
   app.use(express.json({ limit: '50mb' }));
 
-  // Debug logger for ALL requests - MUST be before any routes
   app.use((req, res, next) => {
-    console.log(`[DEBUG] ${req.method} ${req.url}`);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Content-Security-Policy", "frame-ancestors *");
+    
+    if (req.method === 'OPTIONS') {
+      res.status(200).end();
+      return;
+    }
     next();
   });
 
-  // Generic Gemini API endpoint - be extremely permissive with the path
-  app.post(["/api/gemini", "/api/gemini/", "/api/gemini/analyze", "/api/gemini/beautify"], async (req, res) => {
-    console.log("Matched /api/gemini route");
+  // Robust API route handling
+  const apiRouter = express.Router();
+
+  apiRouter.use((req, res, next) => {
+    console.log(`[API Router] ${req.method} ${req.path}`);
+    next();
+  });
+
+  apiRouter.post("/gemini", async (req, res) => {
+    console.log("Handling /api/gemini via router");
     try {
-      const { model, payload } = req.body;
+      const { model, payload, contents, config } = req.body;
       const apiKey = getGeminiApiKey();
       const ai = new GoogleGenAI({ apiKey });
       
+      const targetModel = model || "gemini-3-flash-preview";
+      const actualContents = contents || payload?.contents || payload;
+      const actualConfig = config || payload?.config || payload?.generationConfig || {};
+
+      // Standardize contents for generateContent
+      // The new SDK expects contents to be a GenerateContentParameters['contents']
+      const formattedContents = Array.isArray(actualContents) ? actualContents : [actualContents];
+
       const response = await ai.models.generateContent({
-        model: model || "gemini-3-flash-preview",
-        contents: payload.contents || payload,
-        config: payload.config || payload.generationConfig || {}
+        model: targetModel,
+        contents: formattedContents,
+        config: actualConfig
       });
       
-      // Handle both text and image generation responses
-      let result: any = { text: "" };
-      
-      try {
-        result.text = response.text || "";
-      } catch (e) {
-        // May not have text in some image generation scenarios or errors
-      }
+      // Compatibility with existing frontend
+      const responseData: any = { 
+        ...response,
+        text: response.text 
+      };
 
       // Handle image parts if present
       const parts = response.candidates?.[0]?.content?.parts || [];
       const imagePart = parts.find((p: any) => p.inlineData);
       if (imagePart) {
-        result.generatedImage = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+        responseData.generatedImage = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
       }
 
-      res.json(result);
+      res.json(responseData);
     } catch (error: any) {
-      console.error("Gemini API Error:", error);
-      res.status(500).json({ error: error.message });
+      console.error("Gemini API error:", error);
+      res.status(500).json({ error: error.message || "Gemini API error" });
     }
   });
 
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
-  });
-
-  app.use((req, res, next) => {
-    if (req.method === 'POST') {
-      console.log(`POST request to: ${req.url}`);
-    }
-    next();
-  });
-
-  // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
     const targetUrl = `http://aibigtree.com${targetPath}`;
     try {
@@ -88,18 +92,22 @@ async function startServer() {
       });
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      console.error(`Proxy error for ${targetPath}:`, error.message);
-      res.status(500).json({ success: false, error: "代理转发失败" });
+      if (error.response) {
+        res.status(error.response.status).json(error.response.data);
+      } else {
+        console.error(`代理转发失败 [${targetPath}]:`, error.message);
+        res.status(500).json({ error: "代理转发失败" });
+      }
     }
   };
 
-  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
-  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
-  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  apiRouter.post("/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  apiRouter.post("/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  apiRouter.post("/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  // Vite middleware for development
+  app.use("/api", apiRouter);
+
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -108,13 +116,8 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // Support Express v4 default setup
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
-    });
-    app.post('*', (req, res) => {
-      console.log(`Fallback 404 for POST ${req.url}`);
-      res.status(404).json({ error: `Route ${req.url} not found on this server` });
     });
   }
 
