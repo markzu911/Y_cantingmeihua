@@ -295,17 +295,10 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            {userInfo ? (
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-2xl border border-slate-200 shadow-sm">
-                  <Coins className="w-4 h-4 text-amber-500" />
-                  <span className="text-sm font-bold text-slate-700">{userInfo.integral} 积分</span>
-                </div>
-              </div>
-            ) : userId && (
-              <div className="flex items-center gap-2 px-4 py-2 bg-slate-100/50 rounded-2xl border border-slate-200 border-dashed">
-                <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
-                <span className="text-sm font-medium text-slate-400">正在加载...</span>
+            {userInfo && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-2xl border border-slate-200">
+                <Coins className="w-4 h-4 text-amber-500" />
+                <span className="text-sm font-bold text-slate-700">积分: {userInfo.integral}</span>
               </div>
             )}
           </div>
@@ -487,7 +480,7 @@ export default function App() {
                       <div className="pt-2">
                         <label className="block text-sm font-bold text-slate-800 mb-3">需要美化的点 <span className="text-xs font-normal text-slate-500 ml-1">(可修改/增删)</span></label>
                         <div className="space-y-2.5">
-                          {(analysisResult.beautifyPoints || []).map((point, idx) => (
+                          {analysisResult.beautifyPoints.map((point, idx) => (
                             <div key={idx} className="flex items-center gap-2 group">
                               <input 
                                 type="text"
@@ -534,7 +527,7 @@ export default function App() {
                       {allowAdditions ? (
                         <div className="space-y-3">
                           <p className="text-xs text-slate-500 font-medium mb-3 px-1">AI 推荐了以下装饰，您可以单独开启或关闭：</p>
-                          {(analysisResult?.recommendedAdditions || []).map((add, idx) => (
+                          {analysisResult?.recommendedAdditions?.map((add, idx) => (
                             <div key={idx} className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${add.enabled ? 'bg-white border-slate-300 shadow-sm' : 'bg-slate-50 border-slate-200 opacity-60'}`}>
                               <div className="pr-4">
                                 <div className={`text-sm font-bold ${add.enabled ? 'text-slate-800' : 'text-slate-500'}`}>{add.item}</div>

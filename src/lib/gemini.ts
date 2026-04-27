@@ -1,3 +1,5 @@
+import { Type } from "@google/genai";
+
 export interface AnalysisResult {
   layout: string;
   style: string;
@@ -8,38 +10,12 @@ export interface AnalysisResult {
 }
 
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
-  const prompt = "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.";
-
-  const payload = {
-    contents: [
-      {
-        parts: [
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
-            },
-          },
-          {
-            text: prompt,
-          },
-        ],
-      },
-    ],
-    config: {
-      responseMimeType: "application/json",
-    },
-  };
-
-  const response = await fetch("/api/gemini", {
+  const response = await fetch("/api/analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: "gemini-3-flash-preview",
-      payload,
-    }),
+    body: JSON.stringify({ base64Image, mimeType }),
   });
 
   if (!response.ok) {
@@ -47,22 +23,10 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
     throw new Error(err.error || "Failed to analyze image");
   }
 
-  const data = await response.json();
-  let result;
-  try {
-    result = JSON.parse(data.text);
-  } catch (e) {
-    console.error("AI returned invalid JSON:", data.text);
-    throw new Error("AI 返回数据格式错误，请重试");
-  }
+  const result = await response.json();
   
-  // 强制确保关键字段存在且为数组
-  if (!result.beautifyPoints || !Array.isArray(result.beautifyPoints)) {
-    result.beautifyPoints = ["墙面美化", "地面清洁", "桌面优化"];
-  }
-
   // 初始化推荐物品的启用状态
-  if (result.recommendedAdditions && Array.isArray(result.recommendedAdditions)) {
+  if (result.recommendedAdditions) {
     result.recommendedAdditions = result.recommendedAdditions.map((a: any) => ({ ...a, enabled: true }));
   } else {
     result.recommendedAdditions = [];
@@ -78,64 +42,17 @@ export async function beautifyRestaurantImage(
   options: { ratio: string; lighting: string; resolution: string },
   allowAdditions: boolean
 ): Promise<string> {
-  const additionsToApply = allowAdditions && analysis.recommendedAdditions
-    ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-    : [];
-
-  const additionRules = additionsToApply.length > 0
-    ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-    : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
-
-  const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-
-CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
-USER'S BEAUTIFICATION POINTS:
-${(analysis.beautifyPoints || []).map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
-
-MANDATORY BASELINE (ALWAYS APPLY):
-- FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
-- TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
-- ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
-
-${additionRules}
-
-GENERAL CONSTRAINTS:
-- CRITICAL STRUCTURAL RULE: DO NOT change the structural layout of the room under any circumstances. ABSOLUTELY NO adding new windows, NO adding new doors, and NO changing the architectural structure (walls, ceilings, pillars). You are ONLY allowed to do soft furnishings, cleaning, and surface renovations.
-- Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
-- Make the final image look highly realistic, spotless, and premium.`;
-
-  const payload = {
-    contents: [
-      {
-        parts: [
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
-            },
-          },
-          {
-            text: prompt,
-          },
-        ],
-      },
-    ],
-    config: {
-      imageConfig: {
-        aspectRatio: options.ratio,
-        imageSize: options.resolution,
-      }
-    }
-  };
-
-  const response = await fetch("/api/gemini", {
+  const response = await fetch("/api/beautify", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gemini-3.1-flash-image-preview",
-      payload,
+      base64Image,
+      mimeType,
+      analysis,
+      options,
+      allowAdditions,
     }),
   });
 
@@ -145,8 +62,5 @@ GENERAL CONSTRAINTS:
   }
 
   const data = await response.json();
-  if (!data.generatedImage) {
-    throw new Error("No image generated by AI");
-  }
   return data.generatedImage;
 }
