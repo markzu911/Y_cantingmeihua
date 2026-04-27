@@ -33,21 +33,8 @@ async function startServer() {
   });
 
   // Robust API route handling
-  const apiRouter = express.Router();
-
-  // Log all incoming requests early
-  app.use((req, res, next) => {
-    console.log(`[ACCESS] ${req.method} ${req.url} (original: ${req.originalUrl})`);
-    next();
-  });
-
-  apiRouter.use((req, res, next) => {
-    console.log(`[API Router] ${req.method} ${req.path}`);
-    next();
-  });
-
-  apiRouter.post(["/gemini", "/api/gemini"], async (req, res) => {
-    console.log("Handling /api/gemini via router");
+  const handleGeminiRequest = async (req: express.Request, res: express.Response) => {
+    console.log(`[Gemini Request] ${req.method} ${req.url}`);
     try {
       const { model, payload, contents, config } = req.body;
       const apiKey = getGeminiApiKey();
@@ -57,8 +44,6 @@ async function startServer() {
       const actualContents = contents || payload?.contents || payload;
       const actualConfig = config || payload?.config || payload?.generationConfig || {};
 
-      // Standardize contents for generateContent
-      // The new SDK expects contents to be a GenerateContentParameters['contents']
       const formattedContents = Array.isArray(actualContents) ? actualContents : [actualContents];
 
       const response = await ai.models.generateContent({
@@ -67,13 +52,11 @@ async function startServer() {
         config: actualConfig
       });
       
-      // Compatibility with existing frontend
       const responseData: any = { 
         ...response,
         text: response.text 
       };
 
-      // Handle image parts if present
       const parts = response.candidates?.[0]?.content?.parts || [];
       const imagePart = parts.find((p: any) => p.inlineData);
       if (imagePart) {
@@ -85,10 +68,11 @@ async function startServer() {
       console.error("Gemini API error:", error);
       res.status(500).json({ error: error.message || "Gemini API error" });
     }
-  });
+  };
 
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
     const targetUrl = `http://aibigtree.com${targetPath}`;
+    console.log(`[Proxy Request] ${req.method} ${req.path} -> ${targetUrl}`);
     try {
       const response = await axios({
         method: req.method,
@@ -107,12 +91,17 @@ async function startServer() {
     }
   };
 
-  apiRouter.post("/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
-  apiRouter.post("/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
-  apiRouter.post("/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
-
-  app.use("/api", apiRouter);
-  app.use("/", apiRouter); // Also mount at root in case proxy strips /api
+  // Mount routes directly on app for maximum visibility
+  app.post("/api/gemini", handleGeminiRequest);
+  app.post("/gemini", handleGeminiRequest);
+  
+  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  
+  app.post("/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  app.post("/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  app.post("/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
