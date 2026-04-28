@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 
 export interface AnalysisResult {
   layout: string;
@@ -9,92 +9,82 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
-function getGeminiApiKey() {
-  // @ts-ignore
-  const key = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']$/g, '');
-  if (!key || key === "MY_GEMINI_API_KEY" || key === "") {
-    throw new Error("GEMINI_API_KEY is not set. Please set a valid API key in the environmental variables.");
-  }
-  return key;
-}
-
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
-  const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-  
-  // Need to strip off data:image/jpeg;base64, if present for inlineData
-  const base64Data = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
-
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: [
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType: mimeType,
+  const response = await fetch("/api/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gemini-3-flash-preview",
+      contents: [
+        {
+          inlineData: {
+            data: base64Image,
+            mimeType: mimeType,
+          },
         },
-      },
-      {
-        text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.",
-      },
-    ],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          layout: {
-             type: Type.STRING,
-            description: "餐厅布局描述 (中文)",
-          },
-          style: {
-            type: Type.STRING,
-            description: "装修风格描述 (中文)",
-          },
-          beautifyPoints: {
-            type: Type.ARRAY,
-            items: {
+        {
+          text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.",
+        },
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            layout: {
               type: Type.STRING,
+              description: "餐厅布局描述 (中文)",
             },
-            description: "需要美化的具体点列表 (中文，每条不超过20字，不改变原有物品，墙面可增白/修复)",
-          },
-          recommendedLighting: {
-            type: Type.STRING,
-            description: "推荐的光影效果，必须是 '暖色调', '清新浅色', 或 '高端暗色' 之一",
-          },
-          lightingReason: {
-            type: Type.STRING,
-            description: "为什么推荐这个光影效果的理由 (中文)",
-          },
-          recommendedAdditions: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                item: { type: Type.STRING, description: "推荐添加的物品名称 (中文，例如：墙面挂画、桌面绿植、餐巾盒)" },
-                reason: { type: Type.STRING, description: "推荐理由 (中文)" }
+            style: {
+              type: Type.STRING,
+              description: "装修风格描述 (中文)",
+            },
+            beautifyPoints: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.STRING,
               },
-              required: ["item", "reason"]
+              description: "需要美化的具体点列表 (中文，每条不超过20字，不改变原有物品，墙面可增白/修复)",
             },
-            description: "推荐添加的装饰物品列表 (3-5个)"
-          }
+            recommendedLighting: {
+              type: Type.STRING,
+              description: "推荐的光影效果，必须是 '暖色调', '清新浅色', 或 '高端暗色' 之一",
+            },
+            lightingReason: {
+              type: Type.STRING,
+              description: "为什么推荐这个光影效果的理由 (中文)",
+            },
+            recommendedAdditions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  item: { type: Type.STRING, description: "推荐添加的物品名称 (中文，例如：墙面挂画、桌面绿植、餐巾盒)" },
+                  reason: { type: Type.STRING, description: "推荐理由 (中文)" }
+                },
+                required: ["item", "reason"]
+              },
+              description: "推荐添加的装饰物品列表 (3-5个)"
+            }
+          },
+          required: ["layout", "style", "beautifyPoints", "recommendedLighting", "lightingReason", "recommendedAdditions"],
         },
-        required: ["layout", "style", "beautifyPoints", "recommendedLighting", "lightingReason", "recommendedAdditions"],
       },
-    },
+    })
   });
 
-  const text = response.text;
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to call Gemini API");
+  }
+
+  const { text } = await response.json();
   if (!text) {
     throw new Error("No response from AI");
   }
   
-  let result;
-  try {
-    result = JSON.parse(text);
-  } catch (e) {
-    throw new Error("Failed to parse AI response as JSON");
-  }
-  
+  const result = JSON.parse(text);
+
   // 初始化推荐物品的启用状态
   if (result.recommendedAdditions) {
     result.recommendedAdditions = result.recommendedAdditions.map((a: any) => ({ ...a, enabled: true }));
@@ -112,8 +102,6 @@ export async function beautifyRestaurantImage(
   options: { ratio: string; lighting: string; resolution: string },
   allowAdditions: boolean
 ): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-
   const additionsToApply = allowAdditions && analysis.recommendedAdditions
     ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
     : [];
@@ -140,47 +128,43 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-  // Need to strip off data:image/jpeg;base64, if present for inlineData
-  const base64Data = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
-
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType: mimeType,
+  const response = await fetch("/api/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gemini-3.1-flash-image-preview",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType,
+            },
           },
-        },
-        {
-          text: prompt,
-        },
-      ],
-    },
-    config: {
-      // @ts-ignore
-      imageConfig: {
-        aspectRatio: options.ratio,
-        imageSize: options.resolution,
+          {
+            text: prompt,
+          },
+        ],
+      },
+      config: {
+        imageConfig: {
+          aspectRatio: options.ratio,
+          imageSize: options.resolution,
+        }
       }
-    }
+    })
   });
 
-  let generatedImage = null;
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    // @ts-ignore
-    if (part.inlineData) {
-      // @ts-ignore
-      generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
-      break;
-    }
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to call Gemini API");
   }
 
-  if (!generatedImage) {
+  const { inlineData } = await response.json();
+
+  if (!inlineData) {
     throw new Error("No image generated by AI");
   }
 
-  return generatedImage;
+  return `data:${inlineData.mimeType || "image/png"};base64,${inlineData.data}`;
 }
-
