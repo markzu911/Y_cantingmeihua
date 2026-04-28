@@ -49,7 +49,7 @@ async function startServer() {
       const { base64Image, mimeType } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: [
           {
             inlineData: {
