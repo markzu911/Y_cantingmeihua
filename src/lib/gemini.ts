@@ -22,7 +22,7 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
   const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
   
   const response = await ai.models.generateContent({
-    model: "gemini-3.0-flash",
+    model: "gemini-2.5-flash",
     contents: [
       {
         inlineData: {
