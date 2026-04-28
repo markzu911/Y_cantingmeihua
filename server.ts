@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 import axios from "axios";
+import cors from "cors";
 import { GoogleGenAI } from "@google/genai";
 
 dotenv.config({ override: true });
@@ -19,8 +20,12 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Add CORS policy to allow cross-origin requests
+  app.use(cors());
+
   // Increase the payload size limit for base64 images
   app.use(express.json({ limit: '50mb' }));
+
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
@@ -43,7 +48,7 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  app.post("/api/gemini", async (req, res) => {
+  app.post("/api/tool/gemini", async (req, res) => {
     try {
       const { model, contents, config } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });

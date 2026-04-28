@@ -10,7 +10,7 @@ export interface AnalysisResult {
 }
 
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
-  const response = await fetch("/api/gemini", {
+  const response = await fetch("/api/tool/gemini", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -128,7 +128,7 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-  const response = await fetch("/api/gemini", {
+  const response = await fetch("/api/tool/gemini", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
