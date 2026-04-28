@@ -39,12 +39,14 @@ async function startServer() {
     }
   };
 
-  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
-  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
-  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  const catchAllApi = (path: string) => new RegExp(`.*${path.replace(/\//g, '\\/')}$`);
+
+  app.post(catchAllApi("/api/tool/launch"), (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  app.post(catchAllApi("/api/tool/verify"), (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  app.post(catchAllApi("/api/tool/consume"), (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
   // Generic Gemini API endpoint
-  app.post("/api/gemini", async (req, res) => {
+  app.post(catchAllApi("/api/gemini"), async (req, res) => {
     try {
       const { model, payload } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
