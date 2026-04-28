@@ -43,6 +43,24 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
+  app.post("/api/gemini", async (req, res) => {
+    try {
+      const { model, payload } = req.body;
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      const response = await ai.models.generateContent({
+        model,
+        ...payload
+      });
+      res.json({
+        text: response.text,
+        candidates: response.candidates,
+      });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
