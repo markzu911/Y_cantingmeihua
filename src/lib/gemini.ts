@@ -10,7 +10,6 @@ export interface AnalysisResult {
 }
 
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
-  const model = "gemini-3-flash-preview";
   const payload = {
     contents: [
       {
@@ -74,7 +73,10 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model, payload }),
+    body: JSON.stringify({ 
+      model: "gemini-3-flash-preview", 
+      payload 
+    }),
   });
 
   if (!response.ok) {
@@ -83,10 +85,11 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
   }
 
   const resData = await response.json();
-  const text = resData.text;
-  if (!text) throw new Error("No text found in response");
-  
-  const result: AnalysisResult = JSON.parse(text);
+  const text = resData.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error("No response from AI");
+  }
+  const result = JSON.parse(text);
   
   // 初始化推荐物品的启用状态
   if (result.recommendedAdditions) {
@@ -131,7 +134,6 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-  const model = "gemini-3.1-flash-image-preview";
   const payload = {
     contents: {
       parts: [
@@ -159,7 +161,10 @@ GENERAL CONSTRAINTS:
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model, payload }),
+    body: JSON.stringify({
+      model: "gemini-3.1-flash-image-preview",
+      payload,
+    }),
   });
 
   if (!response.ok) {
@@ -167,9 +172,9 @@ GENERAL CONSTRAINTS:
     throw new Error(err.error || "Failed to beautify image");
   }
 
-  const resData = await response.json();
+  const data = await response.json();
   let generatedImage = null;
-  for (const part of resData.candidates?.[0]?.content?.parts || []) {
+  for (const part of data.candidates?.[0]?.content?.parts || []) {
     if (part.inlineData) {
       generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
       break;
