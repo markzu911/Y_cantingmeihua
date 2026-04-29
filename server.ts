@@ -8,11 +8,19 @@ import axios from "axios";
 dotenv.config({ override: true });
 
 function getGeminiApiKey() {
-  const key = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']$/g, '');
-  if (!key || key === "MY_GEMINI_API_KEY" || key === "") {
-    throw new Error("GEMINI_API_KEY is not set or is still the placeholder. Please set a valid API key in the environmental variables.");
+  const key = process.env.GEMINI_API_KEY;
+  if (!key || key.trim() === "") {
+    throw new Error("GEMINI_API_KEY is missing. Please set it in the Environment Variables (Settings -> Secrets).");
   }
-  return key;
+  
+  // Clean the key: remove any surrounding quotes, whitespace, or newlines
+  const cleanedKey = key.trim().replace(/^["']|["']$/g, '').trim();
+  
+  if (cleanedKey.length < 20) {
+    throw new Error("GEMINI_API_KEY seems too short or malformed. Please check your key.");
+  }
+  
+  return cleanedKey;
 }
 
 async function startServer() {
@@ -49,7 +57,7 @@ async function startServer() {
       const { base64Image, mimeType } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3-flash-preview",
         contents: [
           {
             inlineData: {

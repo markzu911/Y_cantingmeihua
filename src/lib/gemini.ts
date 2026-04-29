@@ -1,3 +1,5 @@
+import { Type } from "@google/genai";
+
 export interface AnalysisResult {
   layout: string;
   style: string;
