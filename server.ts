@@ -27,8 +27,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images
-  app.use(express.json({ limit: '50mb' }));
+  // Increase the payload size limit for base64 images to 20mb as per client expectation
+  app.use(express.json({ limit: '20mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {

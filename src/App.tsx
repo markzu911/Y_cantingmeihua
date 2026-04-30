@@ -111,17 +111,54 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      const base64 = dataUrl.split(',')[1];
-      setOriginalImage({
-        base64,
-        mimeType: file.type,
-        url: dataUrl
-      });
-      setAnalysisResult(null);
-      setBeautifiedImage(null);
-      setHistory([]);
-      setError(null);
-      setActiveTab('analysis');
+      
+      // Client-side image compression
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const maxSide = 1600;
+
+        // Calculate scaling
+        if (width > height) {
+          if (width > maxSide) {
+            height *= maxSide / width;
+            width = maxSide;
+          }
+        } else {
+          if (height > maxSide) {
+            width *= maxSide / height;
+            height = maxSide;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // Fill with white background for transparency conversion
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+        }
+
+        // Convert to highly compressed JPEG
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const base64 = compressedDataUrl.split(',')[1];
+        
+        setOriginalImage({
+          base64,
+          mimeType: 'image/jpeg',
+          url: compressedDataUrl
+        });
+        setAnalysisResult(null);
+        setBeautifiedImage(null);
+        setHistory([]);
+        setError(null);
+        setActiveTab('analysis');
+      };
+      img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
@@ -329,7 +366,7 @@ export default function App() {
                     <Upload className="w-10 h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
                   </div>
                   <p className="text-base font-semibold text-[#6B6661]">点击或拖拽上传餐厅图片</p>
-                  <p className="text-sm mt-2 text-[#9B9691]">支持 JPG, PNG 高清格式</p>
+                  <p className="text-sm mt-2 text-[#9B9691]">支持常见图片格式（如 JPG, PNG, WebP），最大支持 20MB</p>
                 </div>
               ) : (
                 <div className="space-y-6">
