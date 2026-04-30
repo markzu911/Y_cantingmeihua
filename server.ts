@@ -201,6 +201,28 @@ GENERAL CONSTRAINTS:
     }
   });
 
+  // Generic Gemini endpoint (for consistency with proxy)
+  app.post("/api/gemini", async (req, res) => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      let { model, contents, config } = req.body;
+      
+      if (!model || model === "gemini-pro" || model === "gemini-1.5-flash") {
+        model = "gemini-3-flash-preview";
+      }
+      
+      const result = await ai.models.generateContent({
+        model,
+        contents,
+        config
+      });
+      res.json({ text: result.text });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
