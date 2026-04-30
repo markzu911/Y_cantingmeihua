@@ -125,15 +125,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     // 4. Generic Gemini fallback
     if (url.includes('/api/gemini')) {
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      let { model, contents, config } = req.body;
-      
-      // Map unsupported models to what's available in this environment
-      if (!model || model === "gemini-pro" || model === "gemini-1.5-flash") {
-        model = "gemini-3-flash-preview";
-      }
-      
+      const { model, contents, config } = req.body;
       const result = await ai.models.generateContent({
-        model,
+        model: model || "gemini-pro",
         contents,
         config
       });
