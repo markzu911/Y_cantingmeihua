@@ -25,15 +25,15 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   try {
-    // 1. Tool Proxy
-    if (url.includes('/api/tool/')) {
-      const targetPath = url.includes('?') ? url : url; 
-      const targetUrl = `http://aibigtree.com${targetPath}`;
+    // 1. Tool & Upload Proxy
+    if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
+      const targetUrl = `http://aibigtree.com${url}`;
       const response = await fetch(targetUrl, {
-        method: 'POST',
+        method: req.method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(req.body),
+        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(req.body),
       });
+      
       const data = await response.json();
       return res.status(response.status).json(data);
     }

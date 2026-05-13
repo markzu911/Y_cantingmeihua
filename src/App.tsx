@@ -203,6 +203,27 @@ export default function App() {
 
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
+    
+    // Verify Phase before starting beautification
+    if (userId && toolId) {
+      setIsBeautifying(true);
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setError(verifyData.message || '积分不足');
+          setIsBeautifying(false);
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    }
+
     setIsBeautifying(true);
     setError(null);
     try {
@@ -227,9 +248,20 @@ export default function App() {
           const consumeData = await consumeRes.json();
           if (consumeData.success) {
             setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+            
+            // Step 4: After success and consume, save the result to SaaS OSS
+            await fetch('/api/upload/image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                base64: resultImage,
+                userId,
+                source: 'result'
+              })
+            });
           }
         } catch (err) {
-          console.error('Consume failed:', err);
+          console.error('Consume or Upload failed:', err);
         }
       }
     } catch (err: any) {
