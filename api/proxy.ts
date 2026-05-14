@@ -179,7 +179,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(analysisPromise, 115000, "AI 处理超时(115s)");
+      const response = await withTimeout(analysisPromise, 120000, "AI 处理超时(120s)");
       return res.status(200).json(JSON.parse(response.text));
     }
 
@@ -245,7 +245,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 115000, "AI 处理超时(115s)");
+      const response = await withTimeout(beautifyPromise, 120000, "AI 处理超时(120s)");
 
       let generatedImageBase64 = null;
       let generatedMimeType = "image/png";

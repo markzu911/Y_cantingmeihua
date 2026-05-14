@@ -221,7 +221,7 @@ async function startServer() {
         },
       });
 
-      const response = await withTimeout(analysisPromise, 115000, "AI 处理超时(115s)");
+      const response = await withTimeout(analysisPromise, 120000, "AI 处理超时(120s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -308,7 +308,7 @@ GENERAL CONSTRAINTS:
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 115000, "AI 处理超时(115s)");
+      const response = await withTimeout(beautifyPromise, 120000, "AI 处理超时(120s)");
 
       let generatedBase64 = null;
       let generatedMimeType = "image/png";
