@@ -114,7 +114,6 @@ export default function App() {
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
       
-      // Client-side image compression
       const img = new Image();
       img.onload = async () => {
         const canvas = document.createElement('canvas');
@@ -122,7 +121,6 @@ export default function App() {
         let height = img.height;
         const maxSide = 3072;
 
-        // Calculate scaling
         if (width > height) {
           if (width > maxSide) {
             height *= maxSide / width;
@@ -139,23 +137,32 @@ export default function App() {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          // Fill with white background for transparency conversion
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
         }
 
-        // Convert to highly compressed JPEG
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
         const base64 = compressedDataUrl.split(',')[1];
         
-        let saasUrl: string | undefined;
+        // Immediately set original image for preview
+        setOriginalImage({
+          base64,
+          mimeType: 'image/jpeg',
+          url: compressedDataUrl
+        });
+        
+        setAnalysisResult(null);
+        setBeautifiedImage(null);
+        setHistory([]);
+        setError(null);
+        setActiveTab('analysis');
+        setIsUploading(false);
 
-        // Attempt SaaS Upload if IDs are present
+        // Background SaaS Upload if IDs are present
         if (userId && toolId && userId !== 'null' && toolId !== 'null') {
           try {
             const blob = await (await fetch(compressedDataUrl)).blob();
-            // 1. Get direct token
             const tokenRes = await fetch('/api/upload/direct-token', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -171,14 +178,12 @@ export default function App() {
             const token = await tokenRes.json();
             
             if (token.success) {
-              // 2. PUT to OSS
               await fetch(token.uploadUrl, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'image/jpeg' },
                 body: blob
               });
 
-              // 3. Commit
               const commitRes = await fetch('/api/upload/commit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -192,27 +197,15 @@ export default function App() {
                 })
               });
               const commit = await commitRes.json();
-              if (commit.savedToRecords) {
-                saasUrl = commit.url;
+              if (commit.savedToRecords && commit.url) {
+                // Background update the state with the SAAS URL
+                setOriginalImage(prev => prev ? { ...prev, saasUrl: commit.url } : null);
               }
             }
           } catch (uploadErr) {
-            console.error('SaaS Input Upload failed:', uploadErr);
+            console.error('SaaS Input Upload failed (silenced):', uploadErr);
           }
         }
-
-        setOriginalImage({
-          base64,
-          mimeType: 'image/jpeg',
-          url: compressedDataUrl,
-          saasUrl
-        });
-        setAnalysisResult(null);
-        setBeautifiedImage(null);
-        setHistory([]);
-        setError(null);
-        setActiveTab('analysis');
-        setIsUploading(false);
       };
       img.src = dataUrl;
     };
@@ -437,11 +430,6 @@ export default function App() {
                         <>
                           <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
                           <span className="text-sm sm:text-base">AI 正在审视空间...</span>
-                        </>
-                      ) : isUploading ? (
-                        <>
-                          <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                          <span className="text-sm sm:text-base">正在上传图片...</span>
                         </>
                       ) : (
                         <>

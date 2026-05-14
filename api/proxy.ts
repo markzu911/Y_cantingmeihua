@@ -3,7 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import sharp from "sharp";
 
 export const runtime = 'nodejs';
-export const maxDuration = 240; // 延长至 240 秒
+export const maxDuration = 300; // 延长至 300 秒
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
@@ -188,7 +188,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(analysisPromise, 240000, "AI 处理超时(240s)");
+      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
       return res.status(200).json(JSON.parse(response.text));
     }
 
@@ -255,7 +255,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 240000, "AI 处理超时(240s)");
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
 
       let generatedImageBase64 = null;
       let generatedMimeType = "image/png";
@@ -286,7 +286,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             withoutEnlargement: !isHighRes // Allow high-quality scaling for 2K/4K
           })
           .jpeg({ 
-            quality: 95, 
+            quality: 100, 
             chromaSubsampling: '4:4:4',
             force: true 
           })

@@ -225,7 +225,7 @@ async function startServer() {
         },
       });
 
-      const response = await withTimeout(analysisPromise, 240000, "AI 处理超时(240s)");
+      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -313,7 +313,7 @@ GENERAL CONSTRAINTS:
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 240000, "AI 处理超时(240s)");
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
 
       let generatedBase64 = null;
       let generatedMimeType = "image/png";
@@ -344,7 +344,7 @@ GENERAL CONSTRAINTS:
           withoutEnlargement: !isHighRes 
         })
         .jpeg({ 
-          quality: 95, 
+          quality: 100, 
           chromaSubsampling: '4:4:4',
           force: true 
         })

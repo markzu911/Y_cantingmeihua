@@ -17,7 +17,7 @@ export async function analyzeRestaurantImage(
   imageUrl?: string | null
 ): Promise<AnalysisResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 240000); // 240s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
   try {
     const response = await fetch("/api/analyze", {
@@ -67,7 +67,7 @@ export async function beautifyRestaurantImage(
   imageUrl?: string | null
 ): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 240000); // 240s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
   try {
     const response = await fetch("/api/beautify", {
