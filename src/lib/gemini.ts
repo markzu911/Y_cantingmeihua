@@ -43,7 +43,7 @@ export async function beautifyRestaurantImage(
   allowAdditions: boolean,
   userId?: string | null,
   toolId?: string | null
-): Promise<string> {
+): Promise<{ generatedImage: string; rawBase64: string; mimeType: string }> {
   const response = await fetch("/api/beautify", {
     method: "POST",
     headers: {
@@ -65,6 +65,5 @@ export async function beautifyRestaurantImage(
     throw new Error(err.error || "Failed to beautify image");
   }
 
-  const data = await response.json();
-  return data.generatedImage;
+  return await response.json();
 }

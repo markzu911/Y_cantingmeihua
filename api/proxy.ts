@@ -28,6 +28,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
   // Helper to save result image to SaaS following the standard 3-step flow
   const saveImageToSaas = async (userId: string, toolId: string, base64Data: string, mimeType: string) => {
+    if (userId === 'null' || userId === 'undefined' || !userId) throw new Error('Invalid User ID');
+    if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
+
     const imageBuffer = Buffer.from(base64Data, 'base64');
     
     // 1. Consume
@@ -85,10 +88,16 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
       const targetUrl = `${saasOrigin}${url}`;
+      
+      // Filter out invalid ID strings from body
+      const body = { ...req.body };
+      if (body.userId === 'null' || body.userId === 'undefined') delete body.userId;
+      if (body.toolId === 'null' || body.toolId === 'undefined') delete body.toolId;
+
       const response = await fetch(targetUrl, {
         method: req.method,
         headers: { 'Content-Type': 'application/json' },
-        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(req.body),
+        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(body),
       });
       
       const data = await response.json();
@@ -134,9 +143,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image
+    // 3. Beautify Image (AI Generation ONLY)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -183,20 +192,23 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      let finalUrl = `data:${generatedMimeType};base64,${generatedImageBase64}`;
+      // Return ONLY base64 immediately to prevent timeout
+      return res.status(200).json({ 
+        generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
+        rawBase64: generatedImageBase64,
+        mimeType: generatedMimeType
+      });
+    }
 
-      // If SaaS info provided, save and consume
-      if (userId && toolId) {
-        try {
-          const saasUrl = await saveImageToSaas(userId, toolId, generatedImageBase64, generatedMimeType);
-          if (saasUrl) finalUrl = saasUrl;
-        } catch (saasErr) {
-          console.error('SaaS Save failed, falling back to base64:', saasErr);
-          // Fallback to base64 is already in finalUrl
-        }
+    // 3.5 New Endpoint: Save Record (Handle SaaS logic independently)
+    if (url.includes('/api/upload-record')) {
+      const { userId, toolId, base64Data, mimeType } = req.body;
+      if (!userId || !toolId || !base64Data) {
+        return res.status(400).json({ error: 'Missing parameters' });
       }
-
-      return res.status(200).json({ generatedImage: finalUrl });
+      
+      const saasUrl = await saveImageToSaas(userId, toolId, base64Data, mimeType || "image/png");
+      return res.status(200).json({ success: true, url: saasUrl });
     }
 
     // 4. Generic Gemini fallback

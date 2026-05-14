@@ -227,7 +227,7 @@ export default function App() {
     setIsBeautifying(true);
     setError(null);
     try {
-      const resultImage = await beautifyRestaurantImage(
+      const result = await beautifyRestaurantImage(
         originalImage.base64,
         originalImage.mimeType,
         analysisResult,
@@ -236,24 +236,43 @@ export default function App() {
         userId,
         toolId
       );
-      setBeautifiedImage(resultImage);
-      setHistory(prev => [resultImage, ...prev]);
+      
+      const { generatedImage, rawBase64, mimeType } = result;
+      setBeautifiedImage(generatedImage);
+      setHistory(prev => [generatedImage, ...prev]);
 
-      // If SaaS info provided, we fetch user info again to refresh integral
-      if (userId && toolId) {
-        try {
-          const response = await fetch('/api/tool/launch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId })
+      // BACKGROUND TASK: Save result to SaaS and Refresh Integral
+      if (userId && toolId && rawBase64) {
+        // We run this in background without blocking the UI
+        fetch('/api/upload-record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            userId, 
+            toolId, 
+            base64Data: rawBase64, 
+            mimeType 
+          })
+        }).then(res => res.json())
+          .then(data => {
+            if (data.success && data.url) {
+              // Successfully saved to SaaS OSS, replace local base64 with remote URL if desired
+              // or just keep it as is.
+              console.log('Successfully saved to SaaS:', data.url);
+            }
+          })
+          .catch(err => console.error('SaaS background save failed:', err))
+          .finally(() => {
+            // Refresh integral
+            fetch('/api/tool/launch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId, toolId })
+            }).then(r => r.json())
+              .then(res => {
+                if (res.success) setUserInfo(res.data.user);
+              });
           });
-          const result = await response.json();
-          if (result.success) {
-            setUserInfo(result.data.user);
-          }
-        } catch (err) {
-          console.error('Failed to refresh integral:', err);
-        }
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
