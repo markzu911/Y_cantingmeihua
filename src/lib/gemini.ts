@@ -44,6 +44,7 @@ export async function beautifyRestaurantImage(
   userId?: string | null,
   toolId?: string | null
 ): Promise<{ generatedImage: string; rawBase64: string; mimeType: string }> {
+  // 1. Initial Request to get Task ID
   const response = await fetch("/api/beautify", {
     method: "POST",
     headers: {
@@ -62,8 +63,29 @@ export async function beautifyRestaurantImage(
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "Failed to beautify image");
+    throw new Error(err.error || "Failed to initiate beautification task");
   }
 
-  return await response.json();
+  const { taskId } = await response.json();
+  if (!taskId) throw new Error("No taskId returned from server");
+
+  // 2. Poll for Task Completion
+  const maxAttempts = 60; // 60 * 3s = 180s timeout
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Poll every 3 seconds
+
+    const pollRes = await fetch(`/api/tasks/${taskId}`);
+    if (!pollRes.ok) continue;
+
+    const task = await pollRes.json();
+    if (task.status === 'completed') {
+      return task.data;
+    }
+    if (task.status === 'failed') {
+      throw new Error(task.error || "Generation task failed");
+    }
+    // Stay in loop if 'pending' or 'processing'
+  }
+
+  throw new Error("Task timed out. AI generation is taking longer than expected.");
 }

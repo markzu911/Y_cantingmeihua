@@ -118,7 +118,7 @@ export default function App() {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const maxSide = 1600;
+        const maxSide = 1024; // Optimized from 1600 to 1280 or 1024 as requested
 
         // Calculate scaling
         if (width > height) {
@@ -144,7 +144,7 @@ export default function App() {
         }
 
         // Convert to highly compressed JPEG
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75); // Optimized from 0.85 to 0.75-0.8 as requested
         const base64 = compressedDataUrl.split(',')[1];
         
         setOriginalImage({
@@ -237,20 +237,77 @@ export default function App() {
         toolId
       );
       
-      const { generatedImage } = result;
+      const { generatedImage, rawBase64, mimeType } = result;
       setBeautifiedImage(generatedImage);
       setHistory(prev => [generatedImage, ...prev]);
 
-      // Refresh integral after successful beautification (server-side already handled save)
-      if (userId && toolId) {
-        fetch('/api/tool/launch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        }).then(r => r.json())
-          .then(res => {
-            if (res.success) setUserInfo(res.data.user);
-          }).catch(err => console.error('Integral refresh failed:', err));
+      // SaaS Save Flow (3-Step Binary Upload as per Section 4 & 5)
+      // This avoids 413 Payload Too Large by sending binary directly to OSS
+      if (userId && toolId && rawBase64) {
+        (async () => {
+          try {
+            // 1. Consume Points
+            const consumeRes = await fetch('/api/tool/consume', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId, toolId })
+            });
+            const consume = await consumeRes.json();
+            if (!consume.success) throw new Error(consume.error || '积分扣费失败');
+
+            // 2. Request Direct Upload Token
+            const blob = await (await fetch(generatedImage)).blob();
+            const tokenRes = await fetch('/api/upload/direct-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId,
+                toolId,
+                source: 'result',
+                mimeType: mimeType || 'image/png',
+                fileName: `restaurant_${Date.now()}.png`,
+                fileSize: blob.size
+              })
+            });
+            const token = await tokenRes.json();
+            if (!token.success) throw new Error(token.error || '获取直传地址失败');
+
+            // 3. Binary Upload to OSS
+            const uploadRes = await fetch(token.uploadUrl, {
+              method: token.method || 'PUT',
+              headers: token.headers,
+              body: blob
+            });
+            if (!uploadRes.ok) throw new Error(`OSS上传失败: ${uploadRes.status}`);
+
+            // 4. Commit Record
+            const commitRes = await fetch('/api/upload/commit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId,
+                toolId,
+                source: 'result',
+                objectKey: token.objectKey,
+                fileSize: blob.size
+              })
+            });
+            const commit = await commitRes.json();
+            if (commit.success) {
+              console.log('Successfully saved to SaaS:', commit.url);
+              // Refresh integral
+              const launchRes = await fetch('/api/tool/launch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, toolId })
+              });
+              const launch = await launchRes.json();
+              if (launch.success) setUserInfo(launch.data.user);
+            }
+          } catch (saasErr: any) {
+            console.error('SaaS Binary Save Flow Failed:', saasErr.message);
+          }
+        })();
       }
     } catch (err: any) {
       const errorMsg = err.message || '';

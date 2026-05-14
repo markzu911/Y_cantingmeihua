@@ -10,6 +10,24 @@ function getGeminiApiKey() {
 
 const SAAS_ORIGIN = 'http://aibigtree.com';
 
+// In-memory task storage for Cloud Run (short-lived polling)
+const taskStore = new Map<string, {
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  data?: any;
+  error?: string;
+  timestamp: number;
+}>();
+
+// Cleanup old tasks periodically (every 10 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, task] of taskStore.entries()) {
+    if (now - task.timestamp > 1000 * 60 * 15) { // 15 mins
+      taskStore.delete(id);
+    }
+  }
+}, 1000 * 60 * 10);
+
 /**
  * Robust JSON response reader to handle HTML error pages or malformed JSON
  */
@@ -34,79 +52,6 @@ const filterIds = (id: any) => {
   return String(id);
 };
 
-/**
- * Standard SaaS Image Save Flow (Consume -> Token -> PUT -> Commit)
- * Strictly follows Section 8 of the integration specification.
- */
-async function saveResultImageToSaas({
-  userId,
-  toolId,
-  imageBuffer,
-  mimeType = 'image/png',
-  fileName = 'result.png'
-}: {
-  userId: string;
-  toolId: string;
-  imageBuffer: Buffer;
-  mimeType?: string;
-  fileName?: string;
-}) {
-  const uid = filterIds(userId);
-  const tid = filterIds(toolId);
-  if (!uid || !tid) throw new Error('Invalid UserID or ToolID for SaaS save');
-
-  // 1. Consume (Confirm generation success before charging)
-  const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: uid, toolId: tid })
-  });
-  const consumeData = await readJsonResponse(consumeRes);
-  if (!consumeData.success) throw new Error(consumeData.error || consumeData.message || '扣费失败');
-
-  // 2. Direct Token (Request OSS upload URL)
-  const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      userId: uid,
-      toolId: tid,
-      source: 'result',
-      mimeType,
-      fileName,
-      fileSize: imageBuffer.length
-    })
-  });
-  const token = await readJsonResponse(tokenRes);
-
-  // 3. PUT to OSS (Binary upload)
-  const uploadRes = await fetch(token.uploadUrl, {
-    method: token.method || 'PUT',
-    headers: { ...token.headers, 'Content-Type': mimeType },
-    body: imageBuffer
-  });
-  if (!uploadRes.ok) throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-
-  // 4. Commit (Confirm file exists and write to DB)
-  const commitRes = await fetch(`${SAAS_ORIGIN}/api/upload/commit`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      userId: uid,
-      toolId: tid,
-      source: 'result',
-      objectKey: token.objectKey,
-      fileSize: imageBuffer.length
-    })
-  });
-  const commit = await readJsonResponse(commitRes);
-  if (!commit.success || !commit.savedToRecords) {
-    throw new Error(commit.error || '图片入库失败');
-  }
-
-  return commit.image || commit;
-}
-
 const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) => {
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -129,12 +74,12 @@ async function normalizeInputImage(inputBuffer: Buffer) {
   return sharp(inputBuffer, { failOn: 'none' })
     .rotate() // Automatic rotation based on EXIF
     .resize({
-      width: 2048,
-      height: 2048,
+      width: 1280, // Optimized from 2048 to 1280/1536 as requested
+      height: 1280,
       fit: 'inside',
       withoutEnlargement: true
     })
-    .jpeg({ quality: 88, mozjpeg: true })
+    .jpeg({ quality: 80, mozjpeg: true }) // Quality around 0.8 as requested
     .toBuffer();
 }
 
@@ -205,26 +150,37 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (Including direct SaaS save as per Section 8)
+    // 3. Beautify Image (Task-based to avoid 504)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-      // Normalize input image (Section 6)
-      const inputBuffer = Buffer.from(base64Image, 'base64');
-      const normalizedBuffer = await normalizeInputImage(inputBuffer);
-      const normalizedBase64 = normalizedBuffer.toString('base64');
+      // Initialize task
+      taskStore.set(taskId, {
+        status: 'pending',
+        timestamp: Date.now()
+      });
 
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      
-      const additionsToApply = allowAdditions && analysis.recommendedAdditions
-        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-        : [];
+      // Background process (non-blocking)
+      (async () => {
+        try {
+          taskStore.set(taskId, { ...taskStore.get(taskId)!, status: 'processing' });
+          
+          const inputBuffer = Buffer.from(base64Image, 'base64');
+          const normalizedBuffer = await normalizeInputImage(inputBuffer);
+          const normalizedBase64 = normalizedBuffer.toString('base64');
 
-      const additionRules = additionsToApply.length > 0
-        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-        : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
+          const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+          
+          const additionsToApply = allowAdditions && analysis.recommendedAdditions
+            ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+            : [];
 
-      const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
+          const additionRules = additionsToApply.length > 0
+            ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+            : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
+
+          const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
       CORE REQUIREMENTS:
       1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
       2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
@@ -232,71 +188,72 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       4. STRICTEST RULE: DO NOT modify, blur, change, or remove any existing TEXT, SIGNS, or MENUS. DO NOT add any new text or characters that were not in the original photo. Keep all readable information exactly as it is.
       ${additionRules}
       CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly. The result must be a clean, professional version of the original photo.`;
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
-            { text: prompt },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
-          }
-        }
-      });
-
-      let generatedImageBase64 = null;
-      let generatedMimeType = "image/png";
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          generatedImageBase64 = part.inlineData.data;
-          generatedMimeType = part.inlineData.mimeType || "image/png";
-          break;
-        }
-      }
-
-      if (!generatedImageBase64) {
-        throw new Error("AI failed to generate image");
-      }
-
-      const uid = filterIds(userId);
-      const tid = filterIds(toolId);
-      
-      let finalData = { 
-        generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
-        rawBase64: generatedImageBase64,
-        mimeType: generatedMimeType
-      };
-
-      // SaaS Save Logic inside beautify endpoint (Section 8)
-      // This avoids sending large base64 back and forth via frontend, preventing 413
-      if (uid && tid) {
-        try {
-          const resultBuffer = Buffer.from(generatedImageBase64, 'base64');
-          const saasImage = await saveResultImageToSaas({
-            userId: uid,
-            toolId: tid,
-            imageBuffer: resultBuffer,
-            mimeType: generatedMimeType,
-            fileName: `restaurant_${Date.now()}.png`
-          });
           
-          finalData = {
-            ...finalData,
-            ...saasImage,
-            generatedImage: saasImage.url || finalData.generatedImage
-          };
-        } catch (saasErr: any) {
-          console.error('SaaS Save Error in Beautify:', saasErr.message);
-          // If SaaS save fails, we still return the local data as fallback
-        }
-      }
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 110000); // 110s timeout
 
-      return res.status(200).json(finalData);
+          const response = await ai.models.generateContent({
+            model: "gemini-3.1-flash-image-preview",
+            contents: {
+              parts: [
+                { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
+                { text: prompt },
+              ],
+            },
+            config: {
+              imageConfig: {
+                aspectRatio: options.ratio,
+                imageSize: options.resolution,
+              }
+            }
+          });
+          clearTimeout(timeoutId);
+
+          let generatedImageBase64 = null;
+          let generatedMimeType = "image/png";
+          for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+              generatedImageBase64 = part.inlineData.data;
+              generatedMimeType = part.inlineData.mimeType || "image/png";
+              break;
+            }
+          }
+
+          if (!generatedImageBase64) {
+            throw new Error("AI failed to generate image");
+          }
+
+          taskStore.set(taskId, {
+            status: 'completed',
+            timestamp: Date.now(),
+            data: {
+              generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
+              rawBase64: generatedImageBase64,
+              mimeType: generatedMimeType
+            }
+          });
+        } catch (err: any) {
+          console.error(`Task ${taskId} failed:`, err);
+          taskStore.set(taskId, {
+            status: 'failed',
+            timestamp: Date.now(),
+            error: err.message || 'Task processing failed'
+          });
+        }
+      })();
+
+      return res.status(200).json({ success: true, taskId });
+    }
+
+    // 3.5 Polling Endpoint for Tasks
+    if (url.includes('/api/tasks/')) {
+      const taskId = url.split('/').pop();
+      if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
+      
+      const task = taskStore.get(taskId);
+      if (!task) return res.status(404).json({ error: 'Task not found or expired' });
+      
+      return res.status(200).json(task);
     }
 
     // 4. Generic Gemini fallback
