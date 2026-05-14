@@ -39,6 +39,8 @@ export default function App() {
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
+  const [taskProgress, setTaskProgress] = useState(0);
+  const [taskMessage, setTaskMessage] = useState('');
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,57 @@ export default function App() {
   const [toolInfo, setToolInfo] = useState<SaasToolInfo | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Helper for polling task status
+  const pollTaskStatus = async (taskId: string) => {
+    try {
+      const { getTaskStatus } = await import('./lib/gemini');
+      const poll = async () => {
+        try {
+          const task = await getTaskStatus(taskId);
+          setTaskProgress(task.progress);
+          setTaskMessage(task.message || '');
+
+          if (task.status === 'completed') {
+            const finalImageUrl = task.image?.url || task.generatedImage || '';
+            setBeautifiedImage(finalImageUrl);
+            setHistory(prev => [finalImageUrl, ...prev]);
+            setIsBeautifying(false);
+            
+            // Refresh integral
+            if (userId && toolId) {
+              fetch('/api/tool/launch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, toolId })
+              }).then(r => r.json())
+                .then(res => {
+                  if (res.success) setUserInfo(res.data.user);
+                }).catch(console.error);
+            }
+            return;
+          }
+
+          if (task.status === 'failed') {
+            setError(task.error || '任务执行失败');
+            setIsBeautifying(false);
+            return;
+          }
+
+          // Continue polling
+          setTimeout(poll, 2000);
+        } catch (err: any) {
+          setError(err.message || '获取状态失败');
+          setIsBeautifying(false);
+        }
+      };
+      
+      poll();
+    } catch (err: any) {
+      setError(err.message || '轮询逻辑加载失败');
+      setIsBeautifying(false);
+    }
+  };
 
   // Handle postMessage for SAAS_INIT
   useEffect(() => {
@@ -185,6 +238,8 @@ export default function App() {
     if (!originalImage || !analysisResult) return;
     
     setIsBeautifying(true);
+    setTaskProgress(5);
+    setTaskMessage('正在初始化美化任务...');
     setError(null);
     try {
       const result = await beautifyRestaurantImage(
@@ -197,24 +252,7 @@ export default function App() {
         toolId
       );
       
-      const { generatedImage, image: saasImage } = result;
-      // Prefer SaaS image URL for persistence, otherwise use the generated base64
-      const finalImageUrl = saasImage?.url || generatedImage;
-      
-      setBeautifiedImage(finalImageUrl);
-      setHistory(prev => [finalImageUrl, ...prev]);
-
-      // Refresh integral after generation to show current status
-      if (userId && toolId) {
-        fetch('/api/tool/launch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        }).then(r => r.json())
-          .then(res => {
-            if (res.success) setUserInfo(res.data.user);
-          }).catch(console.error);
-      }
+      pollTaskStatus(result.taskId);
     } catch (err: any) {
       const errorMsg = err.message || '';
       if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('Requested entity was not found')) {
@@ -223,7 +261,6 @@ export default function App() {
       } else {
         setError(errorMsg || '美化失败，请重试');
       }
-    } finally {
       setIsBeautifying(false);
     }
   };
@@ -596,10 +633,19 @@ export default function App() {
                     className="w-full py-4 sm:py-5 px-4 sm:px-6 btn-primary rounded-2xl sm:rounded-[1.5rem] font-bold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_20px_40px_rgba(61,57,53,0.15)] hover:shadow-[0_25px_50px_rgba(61,57,53,0.25)] active:scale-[0.98] text-sm sm:text-base"
                   >
                     {isBeautifying ? (
-                      <>
-                        <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
-                        <span className="text-sm sm:text-base">AI 画笔重绘中...</span>
-                      </>
+                      <div className="flex flex-col items-center w-full">
+                        <div className="flex items-center gap-2 sm:gap-3 mb-3">
+                          <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
+                          <span className="text-sm sm:text-base">{taskMessage || 'AI 画笔重绘中...'}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-white transition-all duration-500 ease-out" 
+                            style={{ width: `${taskProgress}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] mt-2 opacity-60 font-medium">任务进度: {taskProgress}%</span>
+                      </div>
                     ) : (
                       <>
                         <ImageIcon className="w-5 h-5 sm:w-5.5 sm:h-5.5" />
