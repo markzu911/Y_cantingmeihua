@@ -264,9 +264,10 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       // Convert generated image to Buffer and process with Sharp
       let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
       try {
+        const resizeLimit = options.resolution === '4K' ? 4096 : (options.resolution === '2K' ? 2560 : 1600);
         imageBuffer = await sharp(imageBuffer)
           .rotate() 
-          .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+          .resize({ width: resizeLimit, height: resizeLimit, fit: 'inside', withoutEnlargement: true })
           .toBuffer();
       } catch (sharpError) {
         console.error('Sharp processing failed:', sharpError);
