@@ -237,42 +237,20 @@ export default function App() {
         toolId
       );
       
-      const { generatedImage, rawBase64, mimeType } = result;
+      const { generatedImage } = result;
       setBeautifiedImage(generatedImage);
       setHistory(prev => [generatedImage, ...prev]);
 
-      // BACKGROUND TASK: Save result to SaaS and Refresh Integral
-      if (userId && toolId && rawBase64) {
-        // We run this in background without blocking the UI
-        fetch('/api/upload-record', {
+      // Refresh integral after successful beautification
+      if (userId && toolId) {
+        fetch('/api/tool/launch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            userId, 
-            toolId, 
-            base64Data: rawBase64, 
-            mimeType 
-          })
-        }).then(res => res.json())
-          .then(data => {
-            if (data.success && data.url) {
-              // Successfully saved to SaaS OSS, replace local base64 with remote URL if desired
-              // or just keep it as is.
-              console.log('Successfully saved to SaaS:', data.url);
-            }
-          })
-          .catch(err => console.error('SaaS background save failed:', err))
-          .finally(() => {
-            // Refresh integral
-            fetch('/api/tool/launch', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, toolId })
-            }).then(r => r.json())
-              .then(res => {
-                if (res.success) setUserInfo(res.data.user);
-              });
-          });
+          body: JSON.stringify({ userId, toolId })
+        }).then(r => r.json())
+          .then(res => {
+            if (res.success) setUserInfo(res.data.user);
+          }).catch(err => console.error('Integral refresh failed:', err));
       }
     } catch (err: any) {
       const errorMsg = err.message || '';

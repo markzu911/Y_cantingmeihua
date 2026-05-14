@@ -1,10 +1,105 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI, Type } from "@google/genai";
+import sharp from 'sharp';
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
   if (!key || key.trim() === "") return "";
   return key.trim().replace(/^["']|["']$/g, '').trim();
+}
+
+const SAAS_ORIGIN = 'http://aibigtree.com';
+
+/**
+ * Robust JSON response reader to handle HTML error pages or malformed JSON
+ */
+async function readJsonResponse(res: Response) {
+  const text = await res.text();
+  let data: any = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text.slice(0, 300) || 'Unknown non-JSON error' };
+  }
+
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || data.message || `Request failed with status ${res.status}`);
+  }
+
+  return data;
+}
+
+const filterIds = (id: any) => {
+  if (id === 'null' || id === 'undefined' || !id) return null;
+  return String(id);
+};
+
+/**
+ * Standard 3-step SaaS Image Save Flow (Consume -> Token -> PUT -> Commit)
+ */
+async function saveResultImageToSaas({
+  userId,
+  toolId,
+  imageBuffer,
+  mimeType = 'image/png',
+  fileName = 'result.png'
+}: {
+  userId: string;
+  toolId: string;
+  imageBuffer: Buffer;
+  mimeType?: string;
+  fileName?: string;
+}) {
+  const uid = filterIds(userId);
+  const tid = filterIds(toolId);
+  if (!uid || !tid) throw new Error('Invalid UserID or ToolID for SaaS save');
+
+  // 1. Consume
+  const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId: uid, toolId: tid })
+  });
+  await readJsonResponse(consumeRes); // Just check if successful
+
+  // 2. Direct Token
+  const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userId: uid,
+      toolId: tid,
+      source: 'result',
+      mimeType,
+      fileName,
+      fileSize: imageBuffer.length
+    })
+  });
+  const token = await readJsonResponse(tokenRes);
+
+  // 3. PUT to OSS
+  const uploadRes = await fetch(token.uploadUrl, {
+    method: token.method || 'PUT',
+    headers: { ...token.headers, 'Content-Type': mimeType },
+    body: imageBuffer
+  });
+  if (!uploadRes.ok) throw new Error(`OSS Upload failed: ${uploadRes.status}`);
+
+  // 4. Commit
+  const commitRes = await fetch(`${SAAS_ORIGIN}/api/upload/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userId: uid,
+      toolId: tid,
+      source: 'result',
+      objectKey: token.objectKey,
+      fileSize: imageBuffer.length
+    })
+  });
+  const commit = await readJsonResponse(commitRes);
+  
+  return commit.image || commit;
 }
 
 const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) => {
@@ -22,77 +117,33 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
   return await fn(req, res);
 };
 
+/**
+ * Image normalization (Section 6)
+ */
+async function normalizeInputImage(inputBuffer: Buffer) {
+  return sharp(inputBuffer, { failOn: 'none' })
+    .rotate() // Automatic rotation based on EXIF
+    .resize({
+      width: 2048,
+      height: 2048,
+      fit: 'inside',
+      withoutEnlargement: true
+    })
+    .jpeg({ quality: 88, mozjpeg: true })
+    .toBuffer();
+}
+
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
-  const saasOrigin = 'http://aibigtree.com';
-
-  // Helper to save result image to SaaS following the standard 3-step flow
-  const saveImageToSaas = async (userId: string, toolId: string, base64Data: string, mimeType: string) => {
-    if (userId === 'null' || userId === 'undefined' || !userId) throw new Error('Invalid User ID');
-    if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
-
-    const imageBuffer = Buffer.from(base64Data, 'base64');
-    
-    // 1. Consume
-    const consumeRes = await fetch(`${saasOrigin}/api/tool/consume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, toolId })
-    });
-    const consume = await consumeRes.json();
-    if (!consume.success) throw new Error(consume.message || '积分扣除失败');
-
-    // 2. Direct Token
-    const tokenRes = await fetch(`${saasOrigin}/api/upload/direct-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        toolId,
-        source: 'result',
-        mimeType,
-        fileName: 'result.jpg',
-        fileSize: imageBuffer.length
-      })
-    });
-    const token = await tokenRes.json();
-    if (!token.success) throw new Error(token.error || '获取上传凭证失败');
-
-    // 3. PUT to OSS
-    const uploadRes = await fetch(token.uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': mimeType },
-      body: imageBuffer
-    });
-    if (!uploadRes.ok) throw new Error('OSS 上传失败');
-
-    // 4. Commit
-    const commitRes = await fetch(`${saasOrigin}/api/upload/commit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        toolId,
-        source: 'result',
-        objectKey: token.objectKey,
-        fileSize: imageBuffer.length
-      })
-    });
-    const commit = await commitRes.json();
-    if (!commit.success) throw new Error(commit.error || '上传提交失败');
-
-    return commit.url;
-  };
 
   try {
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
-      const targetUrl = `${saasOrigin}${url}`;
+      const targetUrl = `${SAAS_ORIGIN}${url}`;
       
-      // Filter out invalid ID strings from body
       const body = { ...req.body };
-      if (body.userId === 'null' || body.userId === 'undefined') delete body.userId;
-      if (body.toolId === 'null' || body.toolId === 'undefined') delete body.toolId;
+      if (body.userId) body.userId = filterIds(body.userId);
+      if (body.toolId) body.toolId = filterIds(body.toolId);
 
       const response = await fetch(targetUrl, {
         method: req.method,
@@ -100,19 +151,25 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(body),
       });
       
-      const data = await response.json();
-      return res.status(response.status).json(data);
+      const data = await readJsonResponse(response);
+      return res.status(200).json(data);
     }
 
     // 2. Analyze Image
     if (url.includes('/api/analyze')) {
       const { base64Image, mimeType } = req.body;
+      
+      // Normalize input image (Section 6)
+      const inputBuffer = Buffer.from(base64Image, 'base64');
+      const normalizedBuffer = await normalizeInputImage(inputBuffer);
+      const normalizedBase64 = normalizedBuffer.toString('base64');
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          { inlineData: { data: base64Image, mimeType: mimeType } },
-          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables (桌面), you may suggest staging small functional items like vinegar/salt bottles (醋瓶/盐瓶) or tissue boxes (纸巾盒) to make the space look ready for service. 3. Specifically identify ground trash (地面垃圾), trash cans (垃圾桶), surface clutter (杂物), or people (人物) for removal. 4. These points MUST focus ONLY on cleaning, whitening, refurbishing, and minor staging. 5. DO NOT suggest any structural changes. 6. CRITICAL: NEVER suggest modifying, removing, or changing any text, signs, or menus in the image. 7. Each point MUST be short (under 20 characters). 8. Separately, recommend 3-5 NEW decorative items (soft decor) like plants/art to add ONLY if requested later. Also recommend a lighting effect and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON." },
+          { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
+          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables (桌面), you may suggest staging small functional items like vinegar/salt bottles (醋瓶/盐瓶) or tissue boxes (纸巾盒) to make the space look ready for service. 3. Specifically identify ground trash (地面垃圾), trash cans (垃圾桶), surface clutter (杂物), or people (人物) for removal. 4. These points MUST focus ONLY on cleaning, whitening, refurbishing, and minor staging. 5. DO NOT suggest any structural changes. 6. CRITICAL: NEVER suggest modifying, removing, or changing any text, signs, or menus in the image. 7. NOT ADDING EXTRA TEXT: If there is no text in the image, do not suggest adding any. 8. Each point MUST be short (under 20 characters). 9. Separately, recommend 3-5 NEW decorative items (soft decor) like plants/art to add ONLY if requested later. Also recommend a lighting effect and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON." },
         ],
         config: {
           responseMimeType: "application/json",
@@ -143,9 +200,15 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (AI Generation ONLY)
+    // 3. Beautify Image
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+
+      // Normalize input image (Section 6)
+      const inputBuffer = Buffer.from(base64Image, 'base64');
+      const normalizedBuffer = await normalizeInputImage(inputBuffer);
+      const normalizedBase64 = normalizedBuffer.toString('base64');
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -161,15 +224,15 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
       2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
       3. Apply "${options.lighting}" lighting effect.
-      4. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
+      4. STRICTEST RULE: DO NOT modify, blur, change, or remove any existing TEXT, SIGNS, or MENUS. DO NOT add any new text or characters that were not in the original photo. Keep all readable information exactly as it is.
       ${additionRules}
-      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
+      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly. The result must be a clean, professional version of the original photo.`;
       
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: {
           parts: [
-            { inlineData: { data: base64Image, mimeType: mimeType } },
+            { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
             { text: prompt },
           ],
         },
@@ -195,23 +258,56 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      // Return ONLY base64 immediately to prevent timeout
-      return res.status(200).json({ 
+      const uid = filterIds(userId);
+      const tid = filterIds(toolId);
+      let finalData = { 
         generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
         rawBase64: generatedImageBase64,
         mimeType: generatedMimeType
-      });
+      };
+
+      // SaaS Save Logic (Synchronous as per section 8 & 9)
+      if (uid && tid) {
+        try {
+          const resultBuffer = Buffer.from(generatedImageBase64, 'base64');
+          const saasImage = await saveResultImageToSaas({
+            userId: uid,
+            toolId: tid,
+            imageBuffer: resultBuffer,
+            mimeType: generatedMimeType,
+            fileName: `restaurant_${Date.now()}.png`
+          });
+          
+          finalData = {
+            ...finalData,
+            ...saasImage,
+            generatedImage: saasImage.url || finalData.generatedImage
+          };
+        } catch (saasErr: any) {
+          console.error('SaaS Save Error:', saasErr.message);
+        }
+      }
+
+      return res.status(200).json(finalData);
     }
 
     // 3.5 New Endpoint: Save Record (Handle SaaS logic independently)
     if (url.includes('/api/upload-record')) {
       const { userId, toolId, base64Data, mimeType } = req.body;
-      if (!userId || !toolId || !base64Data) {
-        return res.status(400).json({ error: 'Missing parameters' });
+      const uid = filterIds(userId);
+      const tid = filterIds(toolId);
+      if (!uid || !tid || !base64Data) {
+        return res.status(400).json({ error: 'Missing parameters or invalid IDs' });
       }
       
-      const saasUrl = await saveImageToSaas(userId, toolId, base64Data, mimeType || "image/png");
-      return res.status(200).json({ success: true, url: saasUrl });
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      const saasImage = await saveResultImageToSaas({
+        userId: uid,
+        toolId: tid,
+        imageBuffer,
+        mimeType: mimeType || "image/png"
+      });
+      return res.status(200).json({ success: true, ...saasImage });
     }
 
     // 4. Generic Gemini fallback
