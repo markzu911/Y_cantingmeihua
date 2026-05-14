@@ -255,22 +255,24 @@ export default function App() {
       );
       
       const { generatedImage, image: saasImage } = result;
-      // Prefer SaaS image URL for persistence, otherwise use the generated base64
-      const finalImageUrl = saasImage?.url || generatedImage;
-      
-      setBeautifiedImage(finalImageUrl);
-      setHistory(prev => [finalImageUrl, ...prev]);
+      // Immediately show the AI generated image (base64)
+      const finalUrl = saasImage?.url || generatedImage;
+      setBeautifiedImage(finalUrl);
+      setHistory(prev => [finalUrl, ...prev]);
 
-      // Refresh integral after generation to show current status
+      // Refresh integral after generation
       if (userId && toolId) {
-        fetch('/api/tool/launch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        }).then(r => r.json())
-          .then(res => {
-            if (res.success) setUserInfo(res.data.user);
-          }).catch(console.error);
+        // Delay point refresh slightly as it happens asynchronously on server
+        setTimeout(() => {
+          fetch('/api/tool/launch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId })
+          }).then(r => r.json())
+            .then(res => {
+              if (res.success) setUserInfo(res.data.user);
+            }).catch(console.error);
+        }, 3000);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';

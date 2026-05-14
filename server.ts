@@ -141,6 +141,8 @@ async function startServer() {
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
+  app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
@@ -360,23 +362,20 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
-      // Step 6-10: Save successful result to SaaS (Async)
+      // Async SaaS Save (Non-blocking)
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        (async () => {
-          try {
-            await saveResultImageToSaas({
-              userId,
-              toolId,
-              imageBuffer,
-              mimeType: generatedMimeType,
-              fileName: `beautified-${Date.now()}.jpg`
-            });
-            console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`);
-          } catch (error: any) {
-            console.error('[Beautify] Async SaaS save failed (silenced):', error.message);
-          }
-        })();
+        saveResultImageToSaas({
+          userId,
+          toolId,
+          imageBuffer,
+          mimeType: generatedMimeType,
+          fileName: `beautified-${Date.now()}.jpg`
+        }).then(() => {
+          console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`);
+        }).catch(err => {
+          console.error('[Beautify] Async SaaS save failed:', err.message);
+        });
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);

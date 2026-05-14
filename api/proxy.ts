@@ -61,7 +61,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         mimeType,
-        fileName: `beautified-${Date.now()}.png`,
+        fileName: `beautified-${Date.now()}.jpg`,
         fileSize: imageBuffer.length
       })
     });
@@ -85,7 +85,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         objectKey: token.objectKey,
-        fileName: `beautified-${Date.now()}.png`,
+        fileName: `beautified-${Date.now()}.jpg`,
         fileSize: imageBuffer.length
       })
     });
@@ -307,18 +307,13 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       }
 
       const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-
+      
       // 2. Async Save result to SaaS (Non-blocking)
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        (async () => {
-          try {
-            await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-            console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`);
-          } catch (saveError: any) {
-            console.error('[Beautify] Async SaaS save failed (silenced):', saveError.message);
-          }
-        })();
+        saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType)
+          .then(() => console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`))
+          .catch(err => console.error('[Beautify] Async SaaS save failed:', err.message));
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
