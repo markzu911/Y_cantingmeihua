@@ -4,46 +4,129 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import axios from "axios";
+import sharp from "sharp";
+import { v4 as uuidv4 } from "uuid";
 
 dotenv.config({ override: true });
+
+const SAAS_ORIGIN = 'http://aibigtree.com';
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
   if (!key || key.trim() === "") {
     throw new Error("GEMINI_API_KEY is missing. Please set it in the Environment Variables (Settings -> Secrets).");
   }
-  
-  // Clean the key: remove any surrounding quotes, whitespace, or newlines
   const cleanedKey = key.trim().replace(/^["']|["']$/g, '').trim();
-  
-  if (cleanedKey.length < 20) {
-    throw new Error("GEMINI_API_KEY seems too short or malformed. Please check your key.");
-  }
-  
   return cleanedKey;
 }
+
+const filterIds = (id: any) => {
+  if (id === 'null' || id === 'undefined' || !id) return null;
+  return String(id);
+};
+
+/**
+ * Standard SaaS Image Save Flow (Section 8)
+ */
+async function saveResultImageToSaas({
+  userId,
+  toolId,
+  imageBuffer,
+  mimeType = 'image/png'
+}: {
+  userId: string;
+  toolId: string;
+  imageBuffer: Buffer;
+  mimeType?: string;
+}) {
+  const uid = filterIds(userId);
+  const tid = filterIds(toolId);
+  if (!uid || !tid) throw new Error('Invalid UserID or ToolID');
+
+  // 1. Consume
+  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId: uid, toolId: tid });
+  if (!consumeRes.data.success) throw new Error(consumeRes.data.error || '积分扣费确认失败');
+
+  // 2. Direct Token
+  const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+    userId: uid,
+    toolId: tid,
+    source: 'result',
+    mimeType,
+    fileName: `restaurant_${Date.now()}.png`,
+    fileSize: imageBuffer.length
+  });
+  const token = tokenRes.data;
+
+  // 3. PUT to OSS
+  await axios.put(token.uploadUrl, imageBuffer, {
+    headers: { ...token.headers, 'Content-Type': mimeType }
+  });
+
+  // 4. Commit
+  const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
+    userId: uid,
+    toolId: tid,
+    source: 'result',
+    objectKey: token.objectKey,
+    fileSize: imageBuffer.length
+  });
+  
+  if (!commitRes.data.success) throw new Error(commitRes.data.error || '图片入库失败');
+  return commitRes.data.image || commitRes.data;
+}
+
+/**
+ * Image normalization (Section 6)
+ */
+async function normalizeImage(inputBuffer: Buffer) {
+  return sharp(inputBuffer, { failOn: 'none' })
+    .rotate()
+    .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85, mozjpeg: true })
+    .toBuffer();
+}
+
+// In-memory Task Store (for Task Mode - Section 7)
+const taskStore = new Map<string, {
+  status: 'processing' | 'success' | 'error';
+  result?: any;
+  error?: string;
+  createdAt: number;
+}>();
+
+// Cleanup old tasks every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, task] of taskStore.entries()) {
+    if (now - task.createdAt > 3600000) taskStore.delete(id);
+  }
+}, 3600000);
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images to 20mb as per client expectation
   app.use(express.json({ limit: '20mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `http://aibigtree.com${targetPath}`;
+    const targetUrl = `${SAAS_ORIGIN}${targetPath}`;
     try {
+      const body = { ...req.body };
+      if (body.userId) body.userId = filterIds(body.userId);
+      if (body.toolId) body.toolId = filterIds(body.toolId);
+
       const response = await axios({
         method: req.method,
         url: targetUrl,
-        data: req.body,
+        data: body,
         headers: { 'Content-Type': 'application/json' }
       });
       res.status(response.status).json(response.data);
     } catch (error: any) {
       console.error(`Proxy error for ${targetPath}:`, error.message);
-      res.status(500).json({ success: false, error: "代理转发失败" });
+      res.status(500).json({ success: false, error: "集成通讯异常" });
     }
   };
 
@@ -51,176 +134,164 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
-      const { base64Image, mimeType } = req.body;
+      const { base64Image } = req.body;
+      const inputBuffer = Buffer.from(base64Image, 'base64');
+      const normalizedBuffer = await normalizeImage(inputBuffer);
+      const normalizedBase64 = normalizedBuffer.toString('base64');
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
-            },
-          },
-          {
-            text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.",
-          },
+          { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
+          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES: 1. Focus on Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables, suggest items like vinegar bottles or tissue boxes for staging. 3. Identify ground trash, trash cans, or people for removal. 4. DO NOT suggest structural changes or text changes. ALL OUTPUT IN CHINESE. Return JSON." },
         ],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              layout: {
-                 type: Type.STRING,
-                description: "餐厅布局描述 (中文)",
-              },
-              style: {
-                type: Type.STRING,
-                description: "装修风格描述 (中文)",
-              },
-              beautifyPoints: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.STRING,
-                },
-                description: "需要美化的具体点列表 (中文，每条不超过20字，不改变原有物品，墙面可增白/修复)",
-              },
-              recommendedLighting: {
-                type: Type.STRING,
-                description: "推荐的光影效果，必须是 '暖色调', '清新浅色', 或 '高端暗色' 之一",
-              },
-              lightingReason: {
-                type: Type.STRING,
-                description: "为什么推荐这个光影效果的理由 (中文)",
-              },
+              layout: { type: Type.STRING },
+              style: { type: Type.STRING },
+              beautifyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+              recommendedLighting: { type: Type.STRING },
+              lightingReason: { type: Type.STRING },
               recommendedAdditions: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    item: { type: Type.STRING, description: "推荐添加的物品名称 (中文，例如：墙面挂画、桌面绿植、餐巾盒)" },
-                    reason: { type: Type.STRING, description: "推荐理由 (中文)" }
+                    item: { type: Type.STRING },
+                    reason: { type: Type.STRING }
                   },
                   required: ["item", "reason"]
-                },
-                description: "推荐添加的装饰物品列表 (3-5个)"
+                }
               }
             },
             required: ["layout", "style", "beautifyPoints", "recommendedLighting", "lightingReason", "recommendedAdditions"],
-          },
-        },
-      });
-
-      const text = response.text;
-      if (!text) {
-        throw new Error("No response from AI");
-      }
-      
-      const result = JSON.parse(text);
-      res.json(result);
-    } catch (error: any) {
-      console.error(error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/beautify", async (req, res) => {
-    try {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      
-      const additionsToApply = allowAdditions && analysis.recommendedAdditions
-        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-        : [];
-
-      const additionRules = additionsToApply.length > 0
-        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
-
-      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-
-CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
-USER'S BEAUTIFICATION POINTS:
-${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
-
-MANDATORY BASELINE (ALWAYS APPLY):
-- FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
-- TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
-- ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
-
-${additionRules}
-
-GENERAL CONSTRAINTS:
-- CRITICAL STRUCTURAL RULE: DO NOT change the structural layout of the room under any circumstances. ABSOLUTELY NO adding new windows, NO adding new doors, and NO changing the architectural structure (walls, ceilings, pillars). You are ONLY allowed to do soft furnishings, cleaning, and surface renovations.
-- Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
-- Make the final image look highly realistic, spotless, and premium.`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: base64Image,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: prompt,
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
           }
         }
       });
-
-      let generatedImage = null;
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
-          break;
-        }
-      }
-
-      if (!generatedImage) {
-        throw new Error("No image generated by AI");
-      }
-
-      res.json({ generatedImage });
+      res.json(JSON.parse(response.text));
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });
     }
   });
 
-  // Vite middleware for development
+  // Task Mode Implementation for Beautify
+  app.post("/api/beautify", async (req, res) => {
+    const taskId = uuidv4();
+    taskStore.set(taskId, { status: 'processing', createdAt: Date.now() });
+
+    // Return taskId immediately - Thoroughly solves 504 Time-out
+    res.json({ taskId });
+
+    // Background Execution
+    (async () => {
+      try {
+        const { base64Image, analysis, options, allowAdditions } = req.body;
+        const inputBuffer = Buffer.from(base64Image, 'base64');
+        const normalizedBuffer = await normalizeImage(inputBuffer);
+        const normalizedBase64 = normalizedBuffer.toString('base64');
+
+        const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+        const additionsToApply = allowAdditions && analysis.recommendedAdditions
+          ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+          : [];
+
+        const additionRules = additionsToApply.length > 0
+          ? `NEW ADDITIONS: You MUST add these itemsNaturally: ${additionsToApply.join(', ')}.`
+          : `DO NOT add any new decoration items.`;
+
+        const prompt = `Refurbish this restaurant image. Points: ${analysis.beautifyPoints.join(', ')}. 
+        1. Clean walls/floors. 2. Remove trash/clutter/people. 3. Apply "${options.lighting}" lighting. 
+        4. NEVER change structure or text. ${additionRules}`;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3.1-flash-image-preview",
+          contents: {
+            parts: [
+              { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
+              { text: prompt },
+            ],
+          },
+          config: {
+            imageConfig: { aspectRatio: options.ratio, imageSize: options.resolution }
+          }
+        });
+
+        let genBase64 = null;
+        let genMime = "image/png";
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData) {
+            genBase64 = part.inlineData.data;
+            genMime = part.inlineData.mimeType || "image/png";
+            break;
+          }
+        }
+
+        if (!genBase64) throw new Error("AI failed to generate image");
+
+        taskStore.set(taskId, {
+          status: 'success',
+          createdAt: Date.now(),
+          result: {
+            generatedImage: `data:${genMime};base64,${genBase64}`,
+            rawBase64: genBase64,
+            mimeType: genMime
+          }
+        });
+      } catch (error: any) {
+        console.error('Task Error:', error.message);
+        taskStore.set(taskId, {
+          status: 'error',
+          error: error.message,
+          createdAt: Date.now()
+        });
+      }
+    })();
+  });
+
+  app.get("/api/task-status", (req, res) => {
+    const { taskId } = req.query;
+    if (!taskId || typeof taskId !== 'string') return res.status(400).json({ error: 'Missing taskId' });
+    const task = taskStore.get(taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json(task);
+  });
+
+  app.post("/api/save-saas", async (req, res) => {
+    try {
+      const { userId, toolId, base64Data, mimeType } = req.body;
+      const result = await saveResultImageToSaas({
+        userId,
+        toolId,
+        imageBuffer: Buffer.from(base64Data, 'base64'),
+        mimeType
+      });
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('Save SaaS Error:', error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // Vite setup
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // Support Express v4 default setup
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
 }
 
 startServer();
+
