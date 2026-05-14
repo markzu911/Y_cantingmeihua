@@ -5,32 +5,10 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import axios from "axios";
 import sharp from "sharp";
-import { randomUUID } from "node:crypto";
 
 dotenv.config({ override: true });
 
 const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
-
-// TASK STORE (IN-MEMORY MAP - FOR DEV ONLY, USE PERSISTENT STORAGE FOR PRODUCTION)
-const tasks = new Map<string, {
-  status: 'pending' | 'processing' | 'saving' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  generatedImage?: string;
-  image?: any;
-  error?: string;
-  updatedAt: number;
-}>();
-
-// Cleanup old tasks every hour
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, task] of tasks.entries()) {
-    if (now - task.updatedAt > 1000 * 60 * 30) { // 30 minutes
-      tasks.delete(id);
-    }
-  }
-}, 1000 * 60 * 60);
 
 async function readJsonResponse(res: any) {
   const data = res.data;
@@ -149,15 +127,6 @@ async function startServer() {
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  app.get("/api/tasks/:taskId", (req, res) => {
-    const { taskId } = req.params;
-    const task = tasks.get(taskId);
-    if (!task) {
-      return res.status(404).json({ success: false, error: "Task not found" });
-    }
-    res.json({ success: true, ...task });
-  });
-
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
@@ -249,52 +218,26 @@ async function startServer() {
     try {
       const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
       
-      const taskId = randomUUID();
-      tasks.set(taskId, {
-        status: 'pending',
-        progress: 5,
-        message: '任务已创建',
-        updatedAt: Date.now()
-      });
-
-      // Start background process
-      (async () => {
+      // Step 2: Verify points if SaaS info is provided
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
-          const task = tasks.get(taskId)!;
-          
-          // 1. Verify
-          task.status = 'processing';
-          task.progress = 15;
-          task.message = '正在校验积分...';
-          task.updatedAt = Date.now();
+          await verifyBeforeGenerate({ userId, toolId });
+        } catch (error: any) {
+          return res.status(403).json({ success: false, error: error.message });
+        }
+      }
 
-          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-            try {
-              await verifyBeforeGenerate({ userId, toolId });
-            } catch (error: any) {
-              task.status = 'failed';
-              task.error = error.message;
-              task.updatedAt = Date.now();
-              return;
-            }
-          }
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      
+      const additionsToApply = allowAdditions && analysis.recommendedAdditions
+        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+        : [];
 
-          // 2. AI Generation
-          task.progress = 30;
-          task.message = 'AI 正在创作灵感 (高质量生成需较长时间)...';
-          task.updatedAt = Date.now();
+      const additionRules = additionsToApply.length > 0
+        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-          const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-          
-          const additionsToApply = allowAdditions && analysis.recommendedAdditions
-            ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-            : [];
-
-          const additionRules = additionsToApply.length > 0
-            ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-            : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
-
-          const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
 
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
@@ -312,103 +255,80 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-          const response = await ai.models.generateContent({
-            model: "gemini-3.1-flash-image-preview",
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    data: base64Image,
-                    mimeType: mimeType,
-                  },
-                },
-                {
-                  text: prompt,
-                },
-              ],
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: base64Image,
+                mimeType: mimeType,
+              },
             },
-            config: {
-              imageConfig: {
-                aspectRatio: options.ratio,
-                imageSize: options.resolution,
-              }
-            }
-          });
-
-          let generatedBase64 = null;
-          let generatedMimeType = "image/png";
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-              generatedBase64 = part.inlineData.data;
-              generatedMimeType = part.inlineData.mimeType || "image/png";
-              break;
-            }
-          }
-
-          if (!generatedBase64) {
-            throw new Error("No image generated by AI");
-          }
-
-          task.progress = 70;
-          task.message = 'AI 生成完成，正在进行后期优化...';
-          task.updatedAt = Date.now();
-
-          // 3. Image Post-processing
-          let imageBuffer = Buffer.from(generatedBase64, 'base64');
-          imageBuffer = await sharp(imageBuffer)
-            .rotate()
-            .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
-            .toBuffer();
-
-          const finalGeneratedDataUrl = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-
-          // 4. SaaS Save
-          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-            task.status = 'saving';
-            task.progress = 85;
-            task.message = '正在扣除积分并上传云端...';
-            task.updatedAt = Date.now();
-
-            try {
-              const saasImage = await saveResultImageToSaas({
-                userId,
-                toolId,
-                imageBuffer,
-                mimeType: generatedMimeType,
-                fileName: 'beautified-result.png'
-              });
-              
-              task.status = 'completed';
-              task.progress = 100;
-              task.message = '美化完成！';
-              task.image = saasImage;
-              task.generatedImage = finalGeneratedDataUrl;
-              task.updatedAt = Date.now();
-            } catch (error: any) {
-              console.error('SaaS save failed in background:', error);
-              task.status = 'failed';
-              task.error = `图片保存到云端失败: ${error.message}`;
-              task.updatedAt = Date.now();
-            }
-          } else {
-            task.status = 'completed';
-            task.progress = 100;
-            task.message = '美化完成！';
-            task.generatedImage = finalGeneratedDataUrl;
-            task.updatedAt = Date.now();
-          }
-        } catch (error: any) {
-          console.error('Background task error:', error);
-          const task = tasks.get(taskId);
-          if (task) {
-            task.status = 'failed';
-            task.error = error.message;
-            task.updatedAt = Date.now();
+            {
+              text: prompt,
+            },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
           }
         }
-      })();
+      });
 
-      res.json({ success: true, taskId });
+      let generatedBase64 = null;
+      let generatedMimeType = "image/png";
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          generatedBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
+          break;
+        }
+      }
+
+      if (!generatedBase64) {
+        throw new Error("No image generated by AI");
+      }
+
+      // Step 7: Internal image processing (Sharp)
+      // Normalize result: resize to reasonable limit, remove EXIF, optimize
+      let imageBuffer = Buffer.from(generatedBase64, 'base64');
+      imageBuffer = await sharp(imageBuffer)
+        .rotate() // Auto-rotate based on EXIF before removing it
+        .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+        .toBuffer();
+
+      // Step 6-10: Save successful result to SaaS
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        try {
+          const saasImage = await saveResultImageToSaas({
+            userId,
+            toolId,
+            imageBuffer,
+            mimeType: generatedMimeType,
+            fileName: 'beautified-result.png'
+          });
+          
+          return res.json({ 
+            success: true, 
+            image: saasImage,
+            // Still return generatedImage for immediate display if needed, but the primary result is the SaaS image
+            generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
+          });
+        } catch (error: any) {
+          console.error('SaaS save failed:', error);
+          // If SaaS save fails, we still return the generated image but notify the failure if needed
+          // Or strictly follow "commit failed = do not hint success"
+          return res.status(500).json({ success: false, error: `图片保存到云端失败: ${error.message}` });
+        }
+      }
+
+      res.json({ 
+        success: true, 
+        generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}` 
+      });
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });

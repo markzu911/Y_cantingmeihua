@@ -47,16 +47,6 @@ export interface SaasImage {
   fileSize?: number;
 }
 
-export interface TaskStatus {
-  success: boolean;
-  status: 'pending' | 'processing' | 'saving' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  generatedImage?: string;
-  image?: SaasImage;
-  error?: string;
-}
-
 export async function beautifyRestaurantImage(
   base64Image: string,
   mimeType: string,
@@ -65,7 +55,7 @@ export async function beautifyRestaurantImage(
   allowAdditions: boolean,
   userId?: string | null,
   toolId?: string | null
-): Promise<{ success: boolean; taskId: string }> {
+): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
   const response = await fetch("/api/beautify", {
     method: "POST",
     headers: {
@@ -85,19 +75,8 @@ export async function beautifyRestaurantImage(
   const result = await response.json().catch(() => ({ success: false, error: "Network error" }));
 
   if (!response.ok || result.success === false) {
-    throw new Error(result.error || "Failed to start beautification task");
+    throw new Error(result.error || "Failed to beautify image");
   }
 
-  return result;
-}
-
-export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  const response = await fetch(`/api/tasks/${taskId}`);
-  const result = await response.json().catch(() => ({ success: false, error: "Network error" }));
-  
-  if (!response.ok || result.success === false) {
-    throw new Error(result.error || "Failed to fetch task status");
-  }
-  
   return result;
 }
