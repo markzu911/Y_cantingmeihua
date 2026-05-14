@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import path from "path";
 import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -107,7 +108,14 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  app.use(cors());
   app.use(express.json({ limit: '20mb' }));
+
+  // Request logger
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+  });
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
@@ -130,11 +138,11 @@ async function startServer() {
     }
   };
 
-  app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
-  app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
-  app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  app.post("/app-api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
+  app.post("/app-api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
+  app.post("/app-api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
 
-  app.post("/api/analyze", async (req, res) => {
+  app.post("/app-api/analyze", async (req, res) => {
     try {
       const { base64Image } = req.body;
       const inputBuffer = Buffer.from(base64Image, 'base64');
@@ -182,7 +190,7 @@ async function startServer() {
   });
 
   // Task Mode Implementation for Beautify
-  app.post("/api/beautify", async (req, res) => {
+  app.post("/app-api/beautify", async (req, res) => {
     const taskId = uuidv4();
     taskStore.set(taskId, { status: 'processing', createdAt: Date.now() });
 
@@ -255,7 +263,7 @@ async function startServer() {
     })();
   });
 
-  app.get("/api/task-status", (req, res) => {
+  app.get("/app-api/task-status", (req, res) => {
     const { taskId } = req.query;
     if (!taskId || typeof taskId !== 'string') return res.status(400).json({ error: 'Missing taskId' });
     const task = taskStore.get(taskId);
@@ -263,7 +271,7 @@ async function startServer() {
     res.json(task);
   });
 
-  app.post("/api/save-saas", async (req, res) => {
+  app.post("/app-api/save-saas", async (req, res) => {
     try {
       const { userId, toolId, base64Data, mimeType } = req.body;
       const result = await saveResultImageToSaas({

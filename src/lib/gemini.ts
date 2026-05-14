@@ -10,7 +10,7 @@ export interface AnalysisResult {
 }
 
 export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
-  const response = await fetch("/api/analyze", {
+  const response = await fetch("/app-api/analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -45,7 +45,7 @@ export async function beautifyRestaurantImage(
   toolId?: string | null
 ): Promise<{ generatedImage: string; rawBase64: string; mimeType: string }> {
   // 1. Initial Request (Task Start)
-  const response = await fetch("/api/beautify", {
+  const response = await fetch("/app-api/beautify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -75,7 +75,7 @@ export async function beautifyRestaurantImage(
     await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s between polls
     attempts++;
 
-    const statusRes = await fetch(`/api/task-status?taskId=${taskId}`);
+    const statusRes = await fetch(`/app-api/task-status?taskId=${taskId}`);
     if (!statusRes.ok) continue; // Try again on temporary network issues
 
     const task = await statusRes.json();
