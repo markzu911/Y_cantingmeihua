@@ -112,7 +112,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: base64Image, mimeType: mimeType } },
-          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. Specifically identify if there is any ground trash (地面垃圾), visible trash cans (垃圾桶), surface clutter (杂物), or people (人物) that detract from a professional catalog look; if found, include them as beautification points. 3. These points MUST focus ONLY on cleaning, whitening, refurbishing, and tidying (e.g., '移除地面遗留垃圾', '隐藏杂乱垃圾桶', '背景人物擦除', '墙面增白处理'). 4. DO NOT suggest any structural changes or replacements of original materials in these points. 5. Each point MUST be short (under 20 characters). 6. Separately, recommend 3-5 NEW decorative items (soft decor) to add ONLY if requested later. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format." },
+          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables (桌面), you may suggest staging small functional items like vinegar/salt bottles (醋瓶/盐瓶) or tissue boxes (纸巾盒) to make the space look ready for service. 3. Specifically identify ground trash (地面垃圾), trash cans (垃圾桶), surface clutter (杂物), or people (人物) for removal. 4. These points MUST focus ONLY on cleaning, whitening, refurbishing, and minor staging. 5. DO NOT suggest any structural changes. 6. CRITICAL: NEVER suggest modifying, removing, or changing any text, signs, or menus in the image. 7. Each point MUST be short (under 20 characters). 8. Separately, recommend 3-5 NEW decorative items (soft decor) like plants/art to add ONLY if requested later. Also recommend a lighting effect and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON." },
         ],
         config: {
           responseMimeType: "application/json",
@@ -158,11 +158,12 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
       CORE REQUIREMENTS:
-      1. Execute all cleaning and refurbishment points identified in the analysis (e.g., removing trash, wiping tables, whitening walls, removing people).
-      2. If '人物', '垃圾', or '垃圾桶' are mentioned in the analysis points, ensure they are seamlessly removed/erased and backgrounds are realistically inpainted.
-      3. Apply "${options.lighting}" lighting effect to enhance atmosphere.
+      1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
+      2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
+      3. Apply "${options.lighting}" lighting effect.
+      4. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
       ${additionRules}
-      CRITICAL CONSTRAINT: Do NOT change the architectural structure or original furniture models. The result must be a clean, professional version of the original photo.`;
+      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
       
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
