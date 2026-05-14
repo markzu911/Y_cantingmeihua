@@ -4,7 +4,6 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import axios from "axios";
-import sharp from "sharp";
 
 dotenv.config({ override: true });
 
@@ -28,9 +27,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images to 50mb (Safe for large high-res generated images)
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  // Increase the payload size limit for base64 images to 20mb as per client expectation
+  app.use(express.json({ limit: '20mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
@@ -45,124 +43,26 @@ async function startServer() {
       res.status(response.status).json(response.data);
     } catch (error: any) {
       console.error(`Proxy error for ${targetPath}:`, error.message);
-      // Try to read response data if possible
-      const errorData = error.response?.data || { error: error.message };
-      res.status(error.response?.status || 500).json(errorData);
+      res.status(500).json({ success: false, error: "代理转发失败" });
     }
   };
-
-  /**
-   * Image normalization (Section 6)
-   */
-  async function normalizeInputImage(inputBuffer: Buffer) {
-    return sharp(inputBuffer, { failOn: 'none' })
-      .rotate() // Automatic rotation based on EXIF
-      .resize({
-        width: 2048,
-        height: 2048,
-        fit: 'inside',
-        withoutEnlargement: true
-      })
-      .jpeg({ quality: 88, mozjpeg: true })
-      .toBuffer();
-  }
 
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
-  app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
-  app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
-
-  /**
-   * SaaS Image Save Logic (Helper)
-   */
-  async function saveResultImageToSaas({
-    userId,
-    toolId,
-    imageBuffer,
-    mimeType = 'image/png',
-    fileName = 'result.png'
-  }: {
-    userId: string;
-    toolId: string;
-    imageBuffer: Buffer;
-    mimeType?: string;
-    fileName?: string;
-  }) {
-    const origin = 'http://aibigtree.com';
-    
-    // 1. Consume
-    await axios.post(`${origin}/api/tool/consume`, { userId, toolId });
-
-    // 2. Direct Token
-    const tokenRes = await axios.post(`${origin}/api/upload/direct-token`, {
-      userId,
-      toolId,
-      source: 'result',
-      mimeType,
-      fileName,
-      fileSize: imageBuffer.length
-    });
-    const token = tokenRes.data;
-
-    // 3. PUT to OSS
-    await axios.put(token.uploadUrl, imageBuffer, {
-      headers: { ...token.headers, 'Content-Type': mimeType }
-    });
-
-    // 4. Commit
-    const commitRes = await axios.post(`${origin}/api/upload/commit`, {
-      userId,
-      toolId,
-      source: 'result',
-      objectKey: token.objectKey,
-      fileSize: imageBuffer.length
-    });
-    
-    return commitRes.data.image || commitRes.data;
-  }
-
-  app.post("/api/save-saas", async (req, res) => {
-    try {
-      const { userId, toolId, base64Data, mimeType } = req.body;
-      if (!userId || !toolId || !base64Data) {
-        return res.status(400).json({ error: "Missing required fields" });
-      }
-
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-      const result = await saveResultImageToSaas({
-        userId,
-        toolId,
-        imageBuffer,
-        mimeType: mimeType || 'image/png',
-        fileName: `restaurant_${Date.now()}.png`
-      });
-
-      res.json({ success: true, ...result });
-    } catch (error: any) {
-      console.error("Save SaaS Error:", error.message);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
       const { base64Image, mimeType } = req.body;
-      
-      // Normalize input image (Section 6)
-      const inputBuffer = Buffer.from(base64Image, 'base64');
-      const normalizedBuffer = await normalizeInputImage(inputBuffer);
-      const normalizedBase64 = normalizedBuffer.toString('base64');
-
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
           {
             inlineData: {
-              data: normalizedBase64,
-              mimeType: "image/jpeg",
+              data: base64Image,
+              mimeType: mimeType,
             },
           },
           {
@@ -231,12 +131,6 @@ async function startServer() {
   app.post("/api/beautify", async (req, res) => {
     try {
       const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
-      
-      // Normalize input image (Section 6)
-      const inputBuffer = Buffer.from(base64Image, 'base64');
-      const normalizedBuffer = await normalizeInputImage(inputBuffer);
-      const normalizedBase64 = normalizedBuffer.toString('base64');
-
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -271,8 +165,8 @@ GENERAL CONSTRAINTS:
           parts: [
             {
               inlineData: {
-                data: normalizedBase64,
-                mimeType: "image/jpeg",
+                data: base64Image,
+                mimeType: mimeType,
               },
             },
             {
@@ -300,31 +194,7 @@ GENERAL CONSTRAINTS:
         throw new Error("No image generated by AI");
       }
 
-      // Return both full and raw base64
-      const [typePart, base64Part] = generatedImage.split(';base64,');
-      const genMimeType = typePart ? typePart.replace('data:', '') : "image/png";
-
-      res.json({ 
-        generatedImage,
-        rawBase64: base64Part || "",
-        mimeType: genMimeType
-      });
-    } catch (error: any) {
-      console.error(error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/gemini", async (req, res) => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const { model, contents, config } = req.body;
-      const result = await ai.models.generateContent({
-        model: model || "gemini-pro",
-        contents,
-        config
-      });
-      res.json({ text: result.response.text() });
+      res.json({ generatedImage });
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });
