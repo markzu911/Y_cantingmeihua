@@ -205,9 +205,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (AI Generation ONLY)
+    // 3. Beautify Image (Including direct SaaS save as per Section 8)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
 
       // Normalize input image (Section 6)
       const inputBuffer = Buffer.from(base64Image, 'base64');
@@ -263,32 +263,40 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      // Return ONLY base64 immediately to prevent timeout
-      return res.status(200).json({ 
+      const uid = filterIds(userId);
+      const tid = filterIds(toolId);
+      
+      let finalData = { 
         generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
         rawBase64: generatedImageBase64,
         mimeType: generatedMimeType
-      });
-    }
+      };
 
-    // 3.5 Specific Endpoint for SaaS Saving Execution
-    if (url.includes('/api/save-saas')) {
-      const { userId, toolId, base64Data, mimeType } = req.body;
-      const uid = filterIds(userId);
-      const tid = filterIds(toolId);
-      if (!uid || !tid || !base64Data) {
-        return res.status(400).json({ error: 'Missing parameters or invalid IDs' });
+      // SaaS Save Logic inside beautify endpoint (Section 8)
+      // This avoids sending large base64 back and forth via frontend, preventing 413
+      if (uid && tid) {
+        try {
+          const resultBuffer = Buffer.from(generatedImageBase64, 'base64');
+          const saasImage = await saveResultImageToSaas({
+            userId: uid,
+            toolId: tid,
+            imageBuffer: resultBuffer,
+            mimeType: generatedMimeType,
+            fileName: `restaurant_${Date.now()}.png`
+          });
+          
+          finalData = {
+            ...finalData,
+            ...saasImage,
+            generatedImage: saasImage.url || finalData.generatedImage
+          };
+        } catch (saasErr: any) {
+          console.error('SaaS Save Error in Beautify:', saasErr.message);
+          // If SaaS save fails, we still return the local data as fallback
+        }
       }
-      
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-      const saasImage = await saveResultImageToSaas({
-        userId: uid,
-        toolId: tid,
-        imageBuffer,
-        mimeType: mimeType || "image/png",
-        fileName: `restaurant_${Date.now()}.png`
-      });
-      return res.status(200).json({ success: true, ...saasImage });
+
+      return res.status(200).json(finalData);
     }
 
     // 4. Generic Gemini fallback
