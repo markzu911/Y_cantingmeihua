@@ -112,7 +112,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: base64Image, mimeType: mimeType } },
-          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes). Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format." },
+          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. These points MUST focus ONLY on cleaning, whitening, refurbishing, and tidying (e.g., '墙面增白除皱', '地面深度清洁', '桌面杂物清理'). 3. DO NOT suggest any structural changes, new installations, or replacements of original materials in these points. 4. Each point MUST be short (under 20 characters). 5. Separately, recommend 3-5 NEW decorative items (soft decor) to add ONLY if requested later (e.g., plants, art). Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format." },
         ],
         config: {
           responseMimeType: "application/json",
@@ -154,13 +154,16 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const additionRules = additionsToApply.length > 0
         ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
 
-      const prompt = `You are a top-tier professional photo editor and interior designer. Execute EVERY SINGLE initial request for this restaurant.
-      TARGET POINTS: ${analysis.beautifyPoints.join(', ')}.
-      MANDATORY: Clean floors perfectly, remove table clutter, apply "${options.lighting}" lighting effect.
+      const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on these points: ${analysis.beautifyPoints.join(', ')}.
+      MANDATORY ACTIONS:
+      1. Clean all surfaces (floors, walls, tables) perfectly as if new.
+      2. Whiten any dirty or aged walls without changing their material.
+      3. Remove all surface clutter/trash from tables and floors.
+      4. Apply "${options.lighting}" lighting effect to enhance atmosphere.
       ${additionRules}
-      CRITICAL: DO NOT change structural layout (windows, doors, walls). HIGHLY REALISTIC finish.`;
+      CRITICAL CONSTRAINT: Do NOT change the architectural structure, window/door positions, or original furniture models. The result must look like the original room but perfectly clean and professionally lit.`;
       
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
