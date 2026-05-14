@@ -158,54 +158,6 @@ export default function App() {
         setError(null);
         setActiveTab('analysis');
         setIsUploading(false);
-
-        // Background SaaS Upload if IDs are present
-        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-          try {
-            const blob = await (await fetch(compressedDataUrl)).blob();
-            const tokenRes = await fetch('/api/upload/direct-token', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userId,
-                toolId,
-                source: 'tool',
-                mimeType: 'image/jpeg',
-                fileName: `input-${Date.now()}.jpg`,
-                fileSize: blob.size
-              })
-            });
-            const token = await tokenRes.json();
-            
-            if (token.success) {
-              await fetch(token.uploadUrl, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'image/jpeg' },
-                body: blob
-              });
-
-              const commitRes = await fetch('/api/upload/commit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  userId,
-                  toolId,
-                  source: 'tool',
-                  objectKey: token.objectKey,
-                  fileName: `input-${Date.now()}.jpg`,
-                  fileSize: blob.size
-                })
-              });
-              const commit = await commitRes.json();
-              if (commit.savedToRecords && commit.url) {
-                // Background update the state with the SAAS URL
-                setOriginalImage(prev => prev ? { ...prev, saasUrl: commit.url } : null);
-              }
-            }
-          } catch (uploadErr) {
-            console.error('SaaS Input Upload failed (silenced):', uploadErr);
-          }
-        }
       };
       img.src = dataUrl;
     };

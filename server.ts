@@ -46,22 +46,23 @@ async function saveResultImageToSaas({
   // Use dynamic fileName if not provided
   const finalFileName = fileName || `beautified-${Date.now()}.png`;
 
-  // 1. Consume
+  // 1. Consume points
   const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
   await readJsonResponse(consumeRes);
 
   // 2. Direct Token
+  const finalFileNameToUse = `beautified-${Date.now()}.jpg`;
   const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
     userId,
     toolId,
     source: 'result',
     mimeType,
-    fileName: finalFileName,
+    fileName: finalFileNameToUse,
     fileSize: imageBuffer.byteLength
   });
   const token = await readJsonResponse(tokenRes);
 
-  // 3. PUT to OSS
+  // 3. PUT to OSS using token headers
   const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
     headers: { 
       ...(token.headers || {}), 
@@ -79,7 +80,7 @@ async function saveResultImageToSaas({
     toolId,
     source: 'result',
     objectKey: token.objectKey,
-    fileName: finalFileName,
+    fileName: finalFileNameToUse,
     fileSize: imageBuffer.byteLength
   });
   const commitResult = await readJsonResponse(commitRes);
@@ -87,11 +88,7 @@ async function saveResultImageToSaas({
     throw new Error(commitResult.error || '图片入库失败');
   }
 
-  return commitResult.image || {
-    recordId: commitResult.recordId,
-    url: commitResult.url,
-    fileName: commitResult.fileName
-  };
+  return commitResult.image || commitResult;
 }
 
 function getGeminiApiKey() {

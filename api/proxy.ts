@@ -43,16 +43,21 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (userId === 'null' || userId === 'undefined' || !userId) throw new Error('Invalid User ID');
     if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
 
-    // 1. Consume
+    // 1. Consume points (Confirmed success)
+    const saasOrigin = 'https://saas.aibigtree.com';
     const consumeRes = await fetch(`${saasOrigin}/api/tool/consume`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, toolId })
     });
-    const consume = await consumeRes.json();
-    if (!consume.success) throw new Error(consume.message || '积分扣除失败');
+    const consumeText = await consumeRes.text();
+    let consume;
+    try { consume = JSON.parse(consumeText); } catch { consume = { success: false, error: consumeText }; }
+    
+    if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
 
     // 2. Direct Token
+    const finalFileName = `beautified-${Date.now()}.jpg`;
     const tokenRes = await fetch(`${saasOrigin}/api/upload/direct-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -61,17 +66,20 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         mimeType,
-        fileName: `beautified-${Date.now()}.jpg`,
+        fileName: finalFileName,
         fileSize: imageBuffer.length
       })
     });
     const token = await tokenRes.json();
     if (!token.success) throw new Error(token.error || '获取上传凭证失败');
 
-    // 3. PUT to OSS
+    // 3. PUT to OSS using token headers
     const uploadRes = await fetch(token.uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': mimeType },
+      method: token.method || 'PUT',
+      headers: {
+        ...(token.headers || {}),
+        'Content-Type': mimeType
+      },
       body: imageBuffer
     });
     if (!uploadRes.ok) throw new Error(`OSS 上传失败: ${uploadRes.status}`);
@@ -85,18 +93,14 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         objectKey: token.objectKey,
-        fileName: `beautified-${Date.now()}.jpg`,
+        fileName: finalFileName,
         fileSize: imageBuffer.length
       })
     });
-    const commit = await commitRes.json();
-    if (!commit.savedToRecords) throw new Error(commit.error || '图片入库失败');
+    const commitResult = await commitRes.json();
+    if (!commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
 
-    return commit.image || {
-      recordId: commit.recordId,
-      url: commit.url,
-      fileName: commit.fileName
-    };
+    return commitResult.image || commitResult;
   };
 
   try {
