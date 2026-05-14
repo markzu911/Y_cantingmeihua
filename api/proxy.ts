@@ -1,11 +1,23 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI, Type } from "@google/genai";
+import sharp from "sharp";
+
+export const runtime = 'nodejs';
+export const maxDuration = 120; // 延长至 120 秒
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
   if (!key || key.trim() === "") return "";
   return key.trim().replace(/^["']|["']$/g, '').trim();
 }
+
+// 模拟 AbortController 行为的超时 Promise
+const withTimeout = (promise: Promise<any>, ms: number, message: string) => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+  ]);
+};
 
 const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) => {
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -49,7 +61,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         mimeType,
-        fileName: 'result.png',
+        fileName: `beautified-${Date.now()}.png`,
         fileSize: imageBuffer.length
       })
     });
@@ -73,6 +85,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         objectKey: token.objectKey,
+        fileName: `beautified-${Date.now()}.png`,
         fileSize: imageBuffer.length
       })
     });
@@ -108,7 +121,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
     // 2. Analyze Image
     if (url.includes('/api/analyze')) {
-      const { base64Image, mimeType, userId, toolId } = req.body;
+      const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
 
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const verifyRes = await fetch(`${saasOrigin}/api/tool/verify`, {
@@ -122,11 +135,21 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       }
 
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const imageRes = await fetch(imageUrl);
+        const arrayBuffer = await imageRes.arrayBuffer();
+        dataToUse = Buffer.from(arrayBuffer).toString('base64');
+        mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
+      }
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const response = await ai.models.generateContent({
+      const analysisPromise = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          { inlineData: { data: base64Image, mimeType: mimeType } },
+          { inlineData: { data: dataToUse, mimeType: mimeToUse } },
           { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables (桌面), you may suggest staging small functional items like vinegar/salt bottles (醋瓶/盐瓶) or tissue boxes (纸巾盒) to make the space look ready for service. 3. Specifically identify ground trash (地面垃圾), trash cans (垃圾桶), surface clutter (杂物), or people (人物) for removal. 4. These points MUST focus ONLY on cleaning, whitening, refurbishing, and minor staging. 5. DO NOT suggest any structural changes. 6. CRITICAL: NEVER suggest modifying, removing, or changing any text, signs, or menus in the image. 7. Each point MUST be short (under 20 characters). 8. Separately, recommend 3-5 NEW decorative items (soft decor) like plants/art to add ONLY if requested later. Also recommend a lighting effect and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON." },
         ],
         config: {
@@ -155,12 +178,14 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
           }
         }
       });
+
+      const response = await withTimeout(analysisPromise, 115000, "AI 处理超时(115s)");
       return res.status(200).json(JSON.parse(response.text));
     }
 
     // 3. Beautify Image (AI Generation + SaaS Save)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
 
       // 1. Verify points
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
@@ -173,6 +198,16 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         if (!verifyData.success) {
           return res.status(403).json(verifyData);
         }
+      }
+
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const imageRes = await fetch(imageUrl);
+        const arrayBuffer = await imageRes.arrayBuffer();
+        dataToUse = Buffer.from(arrayBuffer).toString('base64');
+        mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
       }
 
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
@@ -194,11 +229,11 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       ${additionRules}
       CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
       
-      const response = await ai.models.generateContent({
+      const beautifyPromise = ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: {
           parts: [
-            { inlineData: { data: base64Image, mimeType: mimeType } },
+            { inlineData: { data: dataToUse, mimeType: mimeToUse } },
             { text: prompt },
           ],
         },
@@ -209,6 +244,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
           }
         }
       });
+
+      const response = await withTimeout(beautifyPromise, 115000, "AI 处理超时(115s)");
 
       let generatedImageBase64 = null;
       let generatedMimeType = "image/png";
@@ -224,8 +261,16 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      // Convert generated image to Buffer for SaaS saving
-      const imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+      // Convert generated image to Buffer and process with Sharp
+      let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+      try {
+        imageBuffer = await sharp(imageBuffer)
+          .rotate() 
+          .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+          .toBuffer();
+      } catch (sharpError) {
+        console.error('Sharp processing failed:', sharpError);
+      }
 
       // 2. Save result to SaaS
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
@@ -234,7 +279,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
           return res.status(200).json({ 
             success: true, 
             image: saasImage,
-            generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`
+            generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
           });
         } catch (saveError: any) {
           console.error('SaaS save failed in proxy:', saveError);
@@ -244,7 +289,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       return res.status(200).json({ 
         success: true,
-        generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`
+        generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
       });
     }
 

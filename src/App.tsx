@@ -25,9 +25,10 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   
   const [activeTab, setActiveTab] = useState<'analysis' | 'decor' | 'settings'>('analysis');
   const [options, setOptions] = useState({
@@ -108,13 +109,14 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setIsUploading(true);
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
       
       // Client-side image compression
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
@@ -147,16 +149,70 @@ export default function App() {
         const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
         const base64 = compressedDataUrl.split(',')[1];
         
+        let saasUrl: string | undefined;
+
+        // Attempt SaaS Upload if IDs are present
+        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+          try {
+            const blob = await (await fetch(compressedDataUrl)).blob();
+            // 1. Get direct token
+            const tokenRes = await fetch('/api/upload/direct-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId,
+                toolId,
+                source: 'tool',
+                mimeType: 'image/jpeg',
+                fileName: `input-${Date.now()}.jpg`,
+                fileSize: blob.size
+              })
+            });
+            const token = await tokenRes.json();
+            
+            if (token.success) {
+              // 2. PUT to OSS
+              await fetch(token.uploadUrl, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'image/jpeg' },
+                body: blob
+              });
+
+              // 3. Commit
+              const commitRes = await fetch('/api/upload/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userId,
+                  toolId,
+                  source: 'tool',
+                  objectKey: token.objectKey,
+                  fileName: `input-${Date.now()}.jpg`,
+                  fileSize: blob.size
+                })
+              });
+              const commit = await commitRes.json();
+              if (commit.savedToRecords) {
+                saasUrl = commit.url;
+              }
+            }
+          } catch (uploadErr) {
+            console.error('SaaS Input Upload failed:', uploadErr);
+          }
+        }
+
         setOriginalImage({
           base64,
           mimeType: 'image/jpeg',
-          url: compressedDataUrl
+          url: compressedDataUrl,
+          saasUrl
         });
         setAnalysisResult(null);
         setBeautifiedImage(null);
         setHistory([]);
         setError(null);
         setActiveTab('analysis');
+        setIsUploading(false);
       };
       img.src = dataUrl;
     };
@@ -169,7 +225,14 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     try {
-      const result = await analyzeRestaurantImage(originalImage.base64, originalImage.mimeType, userId, toolId);
+      // Use saasUrl if available to keep request body small
+      const result = await analyzeRestaurantImage(
+        originalImage.saasUrl ? null : originalImage.base64, 
+        originalImage.saasUrl ? null : originalImage.mimeType, 
+        userId, 
+        toolId,
+        originalImage.saasUrl
+      );
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
@@ -188,13 +251,14 @@ export default function App() {
     setError(null);
     try {
       const result = await beautifyRestaurantImage(
-        originalImage.base64,
-        originalImage.mimeType,
+        originalImage.saasUrl ? null : originalImage.base64,
+        originalImage.saasUrl ? null : originalImage.mimeType,
         analysisResult,
         options,
         allowAdditions,
         userId,
-        toolId
+        toolId,
+        originalImage.saasUrl
       );
       
       const { generatedImage, image: saasImage } = result;
@@ -366,13 +430,18 @@ export default function App() {
                   {!analysisResult && (
                     <button
                       onClick={handleAnalyze}
-                      disabled={isAnalyzing}
+                      disabled={isAnalyzing || isUploading}
                       className="w-full py-3.5 sm:py-4.5 px-4 sm:px-6 btn-primary rounded-xl sm:rounded-[1.25rem] font-semibold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-black/5 hover:shadow-black/10 active:scale-[0.99]"
                     >
                       {isAnalyzing ? (
                         <>
                           <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
                           <span className="text-sm sm:text-base">AI 正在审视空间...</span>
+                        </>
+                      ) : isUploading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+                          <span className="text-sm sm:text-base">正在上传图片...</span>
                         </>
                       ) : (
                         <>

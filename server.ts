@@ -10,6 +10,13 @@ dotenv.config({ override: true });
 
 const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
 
+const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+  ]) as Promise<T>;
+};
+
 async function readJsonResponse(res: any) {
   const data = res.data;
   if (!data || data.success === false) {
@@ -28,7 +35,7 @@ async function saveResultImageToSaas({
   toolId,
   imageBuffer,
   mimeType = 'image/png',
-  fileName = 'result.png'
+  fileName
 }: {
   userId: string,
   toolId: string,
@@ -36,6 +43,9 @@ async function saveResultImageToSaas({
   mimeType?: string,
   fileName?: string
 }) {
+  // Use dynamic fileName if not provided
+  const finalFileName = fileName || `beautified-${Date.now()}.png`;
+
   // 1. Consume
   const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
   await readJsonResponse(consumeRes);
@@ -46,7 +56,7 @@ async function saveResultImageToSaas({
     toolId,
     source: 'result',
     mimeType,
-    fileName,
+    fileName: finalFileName,
     fileSize: imageBuffer.byteLength
   });
   const token = await readJsonResponse(tokenRes);
@@ -69,6 +79,7 @@ async function saveResultImageToSaas({
     toolId,
     source: 'result',
     objectKey: token.objectKey,
+    fileName: finalFileName,
     fileSize: imageBuffer.byteLength
   });
   const commitResult = await readJsonResponse(commitRes);
@@ -130,7 +141,7 @@ async function startServer() {
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
-      const { base64Image, mimeType, userId, toolId } = req.body;
+      const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
 
       // Verify points if SaaS info is provided
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
@@ -141,14 +152,23 @@ async function startServer() {
         }
       }
 
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+      }
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const response = await ai.models.generateContent({
+      const analysisPromise = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
           {
             inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
+              data: dataToUse,
+              mimeType: mimeToUse,
             },
           },
           {
@@ -201,6 +221,7 @@ async function startServer() {
         },
       });
 
+      const response = await withTimeout(analysisPromise, 115000, "AI 处理超时(115s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -216,7 +237,7 @@ async function startServer() {
 
   app.post("/api/beautify", async (req, res) => {
     try {
-      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
       
       // Step 2: Verify points if SaaS info is provided
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
@@ -225,6 +246,15 @@ async function startServer() {
         } catch (error: any) {
           return res.status(403).json({ success: false, error: error.message });
         }
+      }
+
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
       }
 
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
@@ -255,14 +285,14 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-      const response = await ai.models.generateContent({
+      const beautifyPromise = ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: {
           parts: [
             {
               inlineData: {
-                data: base64Image,
-                mimeType: mimeType,
+                data: dataToUse,
+                mimeType: mimeToUse,
               },
             },
             {
@@ -277,6 +307,8 @@ GENERAL CONSTRAINTS:
           }
         }
       });
+
+      const response = await withTimeout(beautifyPromise, 115000, "AI 处理超时(115s)");
 
       let generatedBase64 = null;
       let generatedMimeType = "image/png";
@@ -308,7 +340,7 @@ GENERAL CONSTRAINTS:
             toolId,
             imageBuffer,
             mimeType: generatedMimeType,
-            fileName: 'beautified-result.png'
+            fileName: `beautified-${Date.now()}.png`
           });
           
           return res.json({ 
@@ -320,7 +352,6 @@ GENERAL CONSTRAINTS:
         } catch (error: any) {
           console.error('SaaS save failed:', error);
           // If SaaS save fails, we still return the generated image but notify the failure if needed
-          // Or strictly follow "commit failed = do not hint success"
           return res.status(500).json({ success: false, error: `图片保存到云端失败: ${error.message}` });
         }
       }
