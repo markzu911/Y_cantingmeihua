@@ -225,7 +225,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
       2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
       3. Apply "${options.lighting}" lighting effect.
-      4. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
+      4. RESOLUTION & QUALITY: You MUST generate this image in ${options.resolution} resolution with maximum visual fidelity and razor-sharp details.
+      5. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
       ${additionRules}
       CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
       

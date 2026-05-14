@@ -277,6 +277,7 @@ MANDATORY BASELINE (ALWAYS APPLY):
 - FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
 - TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
 - ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
+- RESOLUTION & QUALITY: You MUST generate this image in ${options.resolution} resolution with maximum visual fidelity and razor-sharp details.
 
 ${additionRules}
 
