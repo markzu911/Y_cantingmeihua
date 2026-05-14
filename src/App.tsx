@@ -255,8 +255,19 @@ export default function App() {
             const consume = await consumeRes.json();
             if (!consume.success) throw new Error(consume.error || '积分扣费失败');
 
-            // 2. Request Direct Upload Token
-            const blob = await (await fetch(generatedImage)).blob();
+            // 2. Convert base64 to Blob robustly
+            const base64Parts = generatedImage.split(',');
+            const base64Data = base64Parts[1];
+            const actualMimeType = base64Parts[0].split(':')[1].split(';')[0];
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: actualMimeType || mimeType || 'image/png' });
+
+            // 3. Request Direct Upload Token
             const tokenRes = await fetch('/api/upload/direct-token', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -264,7 +275,7 @@ export default function App() {
                 userId,
                 toolId,
                 source: 'result',
-                mimeType: mimeType || 'image/png',
+                mimeType: actualMimeType || mimeType || 'image/png',
                 fileName: `restaurant_${Date.now()}.png`,
                 fileSize: blob.size
               })
@@ -272,15 +283,18 @@ export default function App() {
             const token = await tokenRes.json();
             if (!token.success) throw new Error(token.error || '获取直传地址失败');
 
-            // 3. Binary Upload to OSS
+            // 4. Binary Upload to OSS
             const uploadRes = await fetch(token.uploadUrl, {
               method: token.method || 'PUT',
-              headers: token.headers,
+              headers: { 
+                ...token.headers,
+                'Content-Type': actualMimeType || mimeType || 'image/png'
+              },
               body: blob
             });
             if (!uploadRes.ok) throw new Error(`OSS上传失败: ${uploadRes.status}`);
 
-            // 4. Commit Record
+            // 5. Commit Record
             const commitRes = await fetch('/api/upload/commit', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -295,7 +309,7 @@ export default function App() {
             const commit = await commitRes.json();
             if (commit.success) {
               console.log('Successfully saved to SaaS:', commit.url);
-              // Refresh integral
+              // Refresh integral to reflect consumption
               const launchRes = await fetch('/api/tool/launch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

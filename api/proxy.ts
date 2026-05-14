@@ -87,29 +87,23 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
 
   try {
-    // 1. Tool & Upload Proxy
-    if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
-      const targetUrl = `${SAAS_ORIGIN}${url}`;
+    // 1. Local Task Polling (High priority)
+    if (url.includes('/api/tasks/')) {
+      const pathPart = url.split('?')[0];
+      const taskId = pathPart.split('/').pop();
+      console.log(`[Polling] TaskId: ${taskId}`);
       
-      const body = { ...req.body };
-      if (body.userId) body.userId = filterIds(body.userId);
-      if (body.toolId) body.toolId = filterIds(body.toolId);
-
-      const response = await fetch(targetUrl, {
-        method: req.method,
-        headers: { 'Content-Type': 'application/json' },
-        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(body),
-      });
+      if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
       
-      const data = await readJsonResponse(response);
-      return res.status(200).json(data);
+      const task = taskStore.get(taskId);
+      if (!task) return res.status(404).json({ error: 'Task not found or expired' });
+      
+      return res.status(200).json(task);
     }
 
     // 2. Analyze Image
     if (url.includes('/api/analyze')) {
       const { base64Image, mimeType } = req.body;
-      
-      // Normalize input image (Section 6)
       const inputBuffer = Buffer.from(base64Image, 'base64');
       const normalizedBuffer = await normalizeInputImage(inputBuffer);
       const normalizedBase64 = normalizedBuffer.toString('base64');
@@ -119,7 +113,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: normalizedBase64, mimeType: "image/jpeg" } },
-          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. Your analysis SHOULD focus on areas like Walls (墙面), Floors (地面), and Tables (桌面). 2. For Tables (桌面), you may suggest staging small functional items like vinegar/salt bottles (醋瓶/盐瓶) or tissue boxes (纸巾盒) to make the space look ready for service. 3. Specifically identify ground trash (地面垃圾), trash cans (垃圾桶), surface clutter (杂物), or people (人物) for removal. 4. These points MUST focus ONLY on cleaning, whitening, refurbishing, and minor staging. 5. DO NOT suggest any structural changes. 6. CRITICAL: NEVER suggest modifying, removing, or changing any text, signs, or menus in the image. 7. NOT ADDING EXTRA TEXT: If there is no text in the image, do not suggest adding any. 8. Each point MUST be short (under 20 characters). 9. Separately, recommend 3-5 NEW decorative items (soft decor) like plants/art to add ONLY if requested later. Also recommend a lighting effect and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON." },
+          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. Return JSON in Chinese." },
         ],
         config: {
           responseMimeType: "application/json",
@@ -152,20 +146,15 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
     // 3. Beautify Image (Task-based to avoid 504)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const { base64Image, analysis, options, allowAdditions } = req.body;
       const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-      // Initialize task
-      taskStore.set(taskId, {
-        status: 'pending',
-        timestamp: Date.now()
-      });
+      taskStore.set(taskId, { status: 'pending', timestamp: Date.now() });
 
-      // Background process (non-blocking)
+      // Run AI in background
       (async () => {
         try {
           taskStore.set(taskId, { ...taskStore.get(taskId)!, status: 'processing' });
-          
           const inputBuffer = Buffer.from(base64Image, 'base64');
           const normalizedBuffer = await normalizeInputImage(inputBuffer);
           const normalizedBase64 = normalizedBuffer.toString('base64');
@@ -177,21 +166,11 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             : [];
 
           const additionRules = additionsToApply.length > 0
-            ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-            : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
+            ? `NEW ADDITIONS: ${additionsToApply.join(', ')}`
+            : `DO NOT add new objects.`;
 
-          const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
-      CORE REQUIREMENTS:
-      1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
-      2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
-      3. Apply "${options.lighting}" lighting effect.
-      4. STRICTEST RULE: DO NOT modify, blur, change, or remove any existing TEXT, SIGNS, or MENUS. DO NOT add any new text or characters that were not in the original photo. Keep all readable information exactly as it is.
-      ${additionRules}
-      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly. The result must be a clean, professional version of the original photo.`;
+          const prompt = `Restoration expert mode. Refurbish based on: ${analysis.beautifyPoints.join(', ')}. Lighting: ${options.lighting}. ${additionRules}`;
           
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 110000); // 110s timeout
-
           const response = await ai.models.generateContent({
             model: "gemini-3.1-flash-image-preview",
             contents: {
@@ -207,7 +186,6 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
               }
             }
           });
-          clearTimeout(timeoutId);
 
           let generatedImageBase64 = null;
           let generatedMimeType = "image/png";
@@ -219,9 +197,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             }
           }
 
-          if (!generatedImageBase64) {
-            throw new Error("AI failed to generate image");
-          }
+          if (!generatedImageBase64) throw new Error("AI failed to generate image");
 
           taskStore.set(taskId, {
             status: 'completed',
@@ -233,44 +209,40 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             }
           });
         } catch (err: any) {
-          console.error(`Task ${taskId} failed:`, err);
-          taskStore.set(taskId, {
-            status: 'failed',
-            timestamp: Date.now(),
-            error: err.message || 'Task processing failed'
-          });
+          taskStore.set(taskId, { status: 'failed', timestamp: Date.now(), error: err.message });
         }
       })();
 
       return res.status(200).json({ success: true, taskId });
     }
 
-    // 3.5 Polling Endpoint for Tasks
-    if (url.includes('/api/tasks/')) {
-      const taskId = url.split('/').pop();
-      if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
+    // 4. SaaS Proxy Fallback
+    if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
+      const targetUrl = `${SAAS_ORIGIN}${url}`;
+      const payload = { ...req.body };
+      if (payload.userId) payload.userId = filterIds(payload.userId);
+      if (payload.toolId) payload.toolId = filterIds(payload.toolId);
+
+      const response = await fetch(targetUrl, {
+        method: req.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(payload),
+      });
       
-      const task = taskStore.get(taskId);
-      if (!task) return res.status(404).json({ error: 'Task not found or expired' });
-      
-      return res.status(200).json(task);
+      const data = await readJsonResponse(response);
+      return res.status(200).json(data);
     }
 
-    // 4. Generic Gemini fallback
+    // 5. Gemini General
     if (url.includes('/api/gemini')) {
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const { model, contents, config } = req.body;
-      const result = await ai.models.generateContent({
-        model: model || "gemini-pro",
-        contents,
-        config
-      });
+      const result = await ai.models.generateContent({ model: model || "gemini-pro", contents, config });
       return res.status(200).json({ text: result.text });
     }
 
     return res.status(404).json({ error: 'Endpoint not found' });
   } catch (error: any) {
-    console.error('Proxy Error:', error);
     return res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 };
