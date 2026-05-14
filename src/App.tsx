@@ -232,36 +232,27 @@ export default function App() {
         originalImage.mimeType,
         analysisResult,
         options,
-        allowAdditions
+        allowAdditions,
+        userId,
+        toolId
       );
       setBeautifiedImage(resultImage);
       setHistory(prev => [resultImage, ...prev]);
 
-      // Consume Phase
+      // If SaaS info provided, we fetch user info again to refresh integral
       if (userId && toolId) {
         try {
-          const consumeRes = await fetch('/api/tool/consume', {
+          const response = await fetch('/api/tool/launch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, toolId })
           });
-          const consumeData = await consumeRes.json();
-          if (consumeData.success) {
-            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
-            
-            // Step 4: After success and consume, save the result to SaaS OSS
-            await fetch('/api/upload/image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                base64: resultImage,
-                userId,
-                source: 'result'
-              })
-            });
+          const result = await response.json();
+          if (result.success) {
+            setUserInfo(result.data.user);
           }
         } catch (err) {
-          console.error('Consume or Upload failed:', err);
+          console.error('Failed to refresh integral:', err);
         }
       }
     } catch (err: any) {

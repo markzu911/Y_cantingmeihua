@@ -24,10 +24,67 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
 
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
+  const saasOrigin = 'http://aibigtree.com';
+
+  // Helper to save result image to SaaS following the standard 3-step flow
+  const saveImageToSaas = async (userId: string, toolId: string, base64Data: string, mimeType: string) => {
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+    
+    // 1. Consume
+    const consumeRes = await fetch(`${saasOrigin}/api/tool/consume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, toolId })
+    });
+    const consume = await consumeRes.json();
+    if (!consume.success) throw new Error(consume.message || '积分扣除失败');
+
+    // 2. Direct Token
+    const tokenRes = await fetch(`${saasOrigin}/api/upload/direct-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        toolId,
+        source: 'result',
+        mimeType,
+        fileName: 'result.jpg',
+        fileSize: imageBuffer.length
+      })
+    });
+    const token = await tokenRes.json();
+    if (!token.success) throw new Error(token.error || '获取上传凭证失败');
+
+    // 3. PUT to OSS
+    const uploadRes = await fetch(token.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': mimeType },
+      body: imageBuffer
+    });
+    if (!uploadRes.ok) throw new Error('OSS 上传失败');
+
+    // 4. Commit
+    const commitRes = await fetch(`${saasOrigin}/api/upload/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        toolId,
+        source: 'result',
+        objectKey: token.objectKey,
+        fileSize: imageBuffer.length
+      })
+    });
+    const commit = await commitRes.json();
+    if (!commit.success) throw new Error(commit.error || '上传提交失败');
+
+    return commit.url;
+  };
+
   try {
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
-      const targetUrl = `http://aibigtree.com${url}`;
+      const targetUrl = `${saasOrigin}${url}`;
       const response = await fetch(targetUrl, {
         method: req.method,
         headers: { 'Content-Type': 'application/json' },
@@ -79,7 +136,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
     // 3. Beautify Image
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -112,14 +169,34 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      let generatedImage = null;
+      let generatedImageBase64 = null;
+      let generatedMimeType = "image/png";
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
-          generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+          generatedImageBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
           break;
         }
       }
-      return res.status(200).json({ generatedImage });
+
+      if (!generatedImageBase64) {
+        throw new Error("AI failed to generate image");
+      }
+
+      let finalUrl = `data:${generatedMimeType};base64,${generatedImageBase64}`;
+
+      // If SaaS info provided, save and consume
+      if (userId && toolId) {
+        try {
+          const saasUrl = await saveImageToSaas(userId, toolId, generatedImageBase64, generatedMimeType);
+          if (saasUrl) finalUrl = saasUrl;
+        } catch (saasErr) {
+          console.error('SaaS Save failed, falling back to base64:', saasErr);
+          // Fallback to base64 is already in finalUrl
+        }
+      }
+
+      return res.status(200).json({ generatedImage: finalUrl });
     }
 
     // 4. Generic Gemini fallback

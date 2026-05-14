@@ -40,7 +40,9 @@ export async function beautifyRestaurantImage(
   mimeType: string,
   analysis: AnalysisResult,
   options: { ratio: string; lighting: string; resolution: string },
-  allowAdditions: boolean
+  allowAdditions: boolean,
+  userId?: string | null,
+  toolId?: string | null
 ): Promise<string> {
   const response = await fetch("/api/beautify", {
     method: "POST",
@@ -53,6 +55,8 @@ export async function beautifyRestaurantImage(
       analysis,
       options,
       allowAdditions,
+      userId,
+      toolId
     }),
   });
 
