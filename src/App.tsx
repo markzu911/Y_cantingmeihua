@@ -70,7 +70,7 @@ export default function App() {
     const fetchLaunchData = async () => {
       if (!userId || !toolId) return;
       try {
-        const response = await fetch('/app-api/tool/launch', {
+        const response = await fetch('/api/tool/launch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -170,7 +170,7 @@ export default function App() {
     if (userId && toolId) {
       setIsAnalyzing(true);
       try {
-        const verifyRes = await fetch('/app-api/tool/verify', {
+        const verifyRes = await fetch('/api/tool/verify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -208,7 +208,7 @@ export default function App() {
     if (userId && toolId) {
       setIsBeautifying(true);
       try {
-        const verifyRes = await fetch('/app-api/tool/verify', {
+        const verifyRes = await fetch('/api/tool/verify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -243,13 +243,13 @@ export default function App() {
 
       // If SaaS info provided, perform save and refresh in background to avoid 504 on main call
       if (userId && toolId && rawBase64) {
-        fetch('/app-api/save-saas', {
+        fetch('/api/save-saas', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId, base64Data: rawBase64, mimeType })
         }).then(() => {
           // Refresh integral
-          return fetch('/app-api/tool/launch', {
+          return fetch('/api/tool/launch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, toolId })
