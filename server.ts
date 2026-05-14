@@ -129,7 +129,11 @@ async function startServer() {
       });
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      console.error(`Proxy error for ${targetPath}:`, error.message);
+      console.error(`Proxy error (silenced) for ${targetPath}:`, error.message);
+      // For upload paths, don't return 500 if user doesn't want errors for uploads
+      if (targetPath.includes('/api/upload/')) {
+        return res.status(200).json({ success: false, silenced: true });
+      }
       res.status(500).json({ success: false, error: "代理转发失败" });
     }
   };
@@ -221,7 +225,7 @@ async function startServer() {
         },
       });
 
-      const response = await withTimeout(analysisPromise, 120000, "AI 处理超时(120s)");
+      const response = await withTimeout(analysisPromise, 240000, "AI 处理超时(240s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -309,7 +313,7 @@ GENERAL CONSTRAINTS:
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 120000, "AI 处理超时(120s)");
+      const response = await withTimeout(beautifyPromise, 240000, "AI 处理超时(240s)");
 
       let generatedBase64 = null;
       let generatedMimeType = "image/png";
@@ -346,6 +350,9 @@ GENERAL CONSTRAINTS:
         })
         .toBuffer();
 
+      // Force mime type to jpeg after sharp processing
+      generatedMimeType = "image/jpeg";
+
       // Step 6-10: Save successful result to SaaS
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
@@ -354,7 +361,7 @@ GENERAL CONSTRAINTS:
             toolId,
             imageBuffer,
             mimeType: generatedMimeType,
-            fileName: `beautified-${Date.now()}.png`
+            fileName: `beautified-${Date.now()}.jpg`
           });
           
           return res.json({ 
@@ -364,9 +371,12 @@ GENERAL CONSTRAINTS:
             generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
           });
         } catch (error: any) {
-          console.error('SaaS save failed:', error);
-          // If SaaS save fails, we still return the generated image but notify the failure if needed
-          return res.status(500).json({ success: false, error: `图片保存到云端失败: ${error.message}` });
+          console.error('SaaS save failed (silenced):', error);
+          // If SaaS save fails, we still return the generated image
+          return res.json({ 
+            success: true, 
+            generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
+          });
         }
       }
 

@@ -3,7 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import sharp from "sharp";
 
 export const runtime = 'nodejs';
-export const maxDuration = 120; // 延长至 120 秒
+export const maxDuration = 240; // 延长至 240 秒
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
@@ -109,14 +109,23 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       if (body.userId === 'null' || body.userId === 'undefined') delete body.userId;
       if (body.toolId === 'null' || body.toolId === 'undefined') delete body.toolId;
 
-      const response = await fetch(targetUrl, {
-        method: req.method,
-        headers: { 'Content-Type': 'application/json' },
-        body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(body),
-      });
-      
-      const data = await response.json();
-      return res.status(response.status).json(data);
+      try {
+        const response = await fetch(targetUrl, {
+          method: req.method,
+          headers: { 'Content-Type': 'application/json' },
+          body: (req.method === 'GET' || req.method === 'HEAD') ? undefined : JSON.stringify(body),
+        });
+        
+        const data = await response.json();
+        const status = (url.includes('/api/upload/') && response.status >= 400) ? 200 : response.status;
+        return res.status(status).json(data);
+      } catch (proxyError: any) {
+        console.error(`Proxy fetch error (silenced) for ${targetUrl}:`, proxyError);
+        if (url.includes('/api/upload/')) {
+          return res.status(200).json({ success: false, silenced: true });
+        }
+        throw proxyError;
+      }
     }
 
     // 2. Analyze Image
@@ -179,7 +188,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(analysisPromise, 120000, "AI 处理超时(120s)");
+      const response = await withTimeout(analysisPromise, 240000, "AI 处理超时(240s)");
       return res.status(200).json(JSON.parse(response.text));
     }
 
@@ -246,7 +255,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         }
       });
 
-      const response = await withTimeout(beautifyPromise, 120000, "AI 处理超时(120s)");
+      const response = await withTimeout(beautifyPromise, 240000, "AI 处理超时(240s)");
 
       let generatedImageBase64 = null;
       let generatedMimeType = "image/png";
@@ -282,6 +291,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             force: true 
           })
           .toBuffer();
+        
+        // Force mime type to jpeg after sharp processing
+        generatedMimeType = "image/jpeg";
       } catch (sharpError) {
         console.error('Sharp processing failed:', sharpError);
       }
@@ -296,8 +308,12 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
           });
         } catch (saveError: any) {
-          console.error('SaaS save failed in proxy:', saveError);
-          return res.status(500).json({ success: false, error: `图片入库失败: ${saveError.message}` });
+          console.error('SaaS save failed (silenced) in proxy:', saveError);
+          // Return the generated image even if SaaS recording fails
+          return res.status(200).json({ 
+            success: true, 
+            generatedImage: `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`
+          });
         }
       }
 

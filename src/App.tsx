@@ -120,7 +120,7 @@ export default function App() {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const maxSide = 1600;
+        const maxSide = 3072;
 
         // Calculate scaling
         if (width > height) {
