@@ -237,20 +237,27 @@ export default function App() {
         toolId
       );
       
-      const { generatedImage } = result;
+      const { generatedImage, rawBase64, mimeType } = result;
       setBeautifiedImage(generatedImage);
       setHistory(prev => [generatedImage, ...prev]);
 
-      // Refresh integral after successful beautification
-      if (userId && toolId) {
-        fetch('/api/tool/launch', {
+      // If SaaS info provided, perform save and refresh in background to avoid 504 on main call
+      if (userId && toolId && rawBase64) {
+        fetch('/api/save-saas', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
+          body: JSON.stringify({ userId, toolId, base64Data: rawBase64, mimeType })
+        }).then(() => {
+          // Refresh integral
+          return fetch('/api/tool/launch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId })
+          });
         }).then(r => r.json())
           .then(res => {
             if (res.success) setUserInfo(res.data.user);
-          }).catch(err => console.error('Integral refresh failed:', err));
+          }).catch(err => console.error('Background SaaS save/refresh failed:', err));
       }
     } catch (err: any) {
       const errorMsg = err.message || '';

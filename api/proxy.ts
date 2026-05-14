@@ -200,9 +200,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image
+    // 3. Beautify Image (AI Generation ONLY)
     if (url.includes('/api/beautify')) {
-      const { base64Image, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
 
       // Normalize input image (Section 6)
       const inputBuffer = Buffer.from(base64Image, 'base64');
@@ -258,41 +258,16 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      const uid = filterIds(userId);
-      const tid = filterIds(toolId);
-      let finalData = { 
+      // Return ONLY base64 immediately to prevent timeout
+      return res.status(200).json({ 
         generatedImage: `data:${generatedMimeType};base64,${generatedImageBase64}`,
         rawBase64: generatedImageBase64,
         mimeType: generatedMimeType
-      };
-
-      // SaaS Save Logic (Synchronous as per section 8 & 9)
-      if (uid && tid) {
-        try {
-          const resultBuffer = Buffer.from(generatedImageBase64, 'base64');
-          const saasImage = await saveResultImageToSaas({
-            userId: uid,
-            toolId: tid,
-            imageBuffer: resultBuffer,
-            mimeType: generatedMimeType,
-            fileName: `restaurant_${Date.now()}.png`
-          });
-          
-          finalData = {
-            ...finalData,
-            ...saasImage,
-            generatedImage: saasImage.url || finalData.generatedImage
-          };
-        } catch (saasErr: any) {
-          console.error('SaaS Save Error:', saasErr.message);
-        }
-      }
-
-      return res.status(200).json(finalData);
+      });
     }
 
-    // 3.5 New Endpoint: Save Record (Handle SaaS logic independently)
-    if (url.includes('/api/upload-record')) {
+    // 3.5 Specific Endpoint for SaaS Saving Execution
+    if (url.includes('/api/save-saas')) {
       const { userId, toolId, base64Data, mimeType } = req.body;
       const uid = filterIds(userId);
       const tid = filterIds(toolId);
@@ -305,7 +280,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         userId: uid,
         toolId: tid,
         imageBuffer,
-        mimeType: mimeType || "image/png"
+        mimeType: mimeType || "image/png",
+        fileName: `restaurant_${Date.now()}.png`
       });
       return res.status(200).json({ success: true, ...saasImage });
     }
