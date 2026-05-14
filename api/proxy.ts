@@ -266,9 +266,21 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
       try {
         const resizeLimit = options.resolution === '4K' ? 4096 : (options.resolution === '2K' ? 2560 : 1600);
+        const isHighRes = options.resolution === '4K' || options.resolution === '2K';
+        
         imageBuffer = await sharp(imageBuffer)
           .rotate() 
-          .resize({ width: resizeLimit, height: resizeLimit, fit: 'inside', withoutEnlargement: true })
+          .resize({ 
+            width: resizeLimit, 
+            height: resizeLimit, 
+            fit: 'inside', 
+            withoutEnlargement: !isHighRes // Allow high-quality scaling for 2K/4K
+          })
+          .jpeg({ 
+            quality: 95, 
+            chromaSubsampling: '4:4:4',
+            force: true 
+          })
           .toBuffer();
       } catch (sharpError) {
         console.error('Sharp processing failed:', sharpError);

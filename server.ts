@@ -329,9 +329,21 @@ GENERAL CONSTRAINTS:
       // Normalize result: resize to reasonable limit, remove EXIF, optimize
       let imageBuffer = Buffer.from(generatedBase64, 'base64');
       const resizeLimit = options.resolution === '4K' ? 4096 : (options.resolution === '2K' ? 2560 : 1600);
+      const isHighRes = options.resolution === '4K' || options.resolution === '2K';
+
       imageBuffer = await sharp(imageBuffer)
         .rotate() // Auto-rotate based on EXIF before removing it
-        .resize({ width: resizeLimit, height: resizeLimit, fit: 'inside', withoutEnlargement: true })
+        .resize({ 
+          width: resizeLimit, 
+          height: resizeLimit, 
+          fit: 'inside', 
+          withoutEnlargement: !isHighRes 
+        })
+        .jpeg({ 
+          quality: 95, 
+          chromaSubsampling: '4:4:4',
+          force: true 
+        })
         .toBuffer();
 
       // Step 6-10: Save successful result to SaaS
