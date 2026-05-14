@@ -360,7 +360,6 @@ export default function App() {
                     <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
                   </div>
                   <p className="text-sm sm:text-base font-semibold text-[#6B6661] text-center">点击或拖拽上传餐厅图片</p>
-                  <p className="text-xs mt-2 text-[#9B9691] text-center">支持 JPG, PNG, WebP，最大 20MB</p>
                 </div>
               ) : (
                 <div className="space-y-4 sm:space-y-6">

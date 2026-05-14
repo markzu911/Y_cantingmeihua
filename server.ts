@@ -43,21 +43,18 @@ async function saveResultImageToSaas({
   mimeType?: string,
   fileName?: string
 }) {
-  // Use dynamic fileName if not provided
-  const finalFileName = fileName || `beautified-${Date.now()}.png`;
-
   // 1. Consume points
   const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
   await readJsonResponse(consumeRes);
 
   // 2. Direct Token
-  const finalFileNameToUse = `beautified-${Date.now()}.jpg`;
+  const finalFileName = fileName || `beautified-${Date.now()}.jpg`;
   const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
     userId,
     toolId,
     source: 'result',
     mimeType,
-    fileName: finalFileNameToUse,
+    fileName: finalFileName,
     fileSize: imageBuffer.byteLength
   });
   const token = await readJsonResponse(tokenRes);
@@ -80,7 +77,7 @@ async function saveResultImageToSaas({
     toolId,
     source: 'result',
     objectKey: token.objectKey,
-    fileName: finalFileNameToUse,
+    fileName: finalFileName,
     fileSize: imageBuffer.byteLength
   });
   const commitResult = await readJsonResponse(commitRes);
@@ -116,7 +113,7 @@ async function startServer() {
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `http://aibigtree.com${targetPath}`;
+    const targetUrl = `${SAAS_ORIGIN}${targetPath}`;
     try {
       const response = await axios({
         method: req.method,
