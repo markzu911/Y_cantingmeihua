@@ -9,13 +9,18 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
-export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
+export async function analyzeRestaurantImage(
+  base64Image: string,
+  mimeType: string,
+  userId?: string | null,
+  toolId?: string | null
+): Promise<AnalysisResult> {
   const response = await fetch("/api/analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ base64Image, mimeType }),
+    body: JSON.stringify({ base64Image, mimeType, userId, toolId }),
   });
 
   if (!response.ok) {
@@ -35,6 +40,13 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
   return result;
 }
 
+export interface SaasImage {
+  recordId: string;
+  url: string;
+  fileName: string;
+  fileSize?: number;
+}
+
 export async function beautifyRestaurantImage(
   base64Image: string,
   mimeType: string,
@@ -43,8 +55,7 @@ export async function beautifyRestaurantImage(
   allowAdditions: boolean,
   userId?: string | null,
   toolId?: string | null
-): Promise<{ generatedImage: string; rawBase64: string; mimeType: string }> {
-  // 1. Initial Request to get Task ID
+): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
   const response = await fetch("/api/beautify", {
     method: "POST",
     headers: {
@@ -61,31 +72,11 @@ export async function beautifyRestaurantImage(
     }),
   });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "Failed to initiate beautification task");
+  const result = await response.json().catch(() => ({ success: false, error: "Network error" }));
+
+  if (!response.ok || result.success === false) {
+    throw new Error(result.error || "Failed to beautify image");
   }
 
-  const { taskId } = await response.json();
-  if (!taskId) throw new Error("No taskId returned from server");
-
-  // 2. Poll for Task Completion
-  const maxAttempts = 60; // 60 * 3s = 180s timeout
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Poll every 3 seconds
-
-    const pollRes = await fetch(`/api/tasks/${taskId}`);
-    if (!pollRes.ok) continue;
-
-    const task = await pollRes.json();
-    if (task.status === 'completed') {
-      return task.data;
-    }
-    if (task.status === 'failed') {
-      throw new Error(task.error || "Generation task failed");
-    }
-    // Stay in loop if 'pending' or 'processing'
-  }
-
-  throw new Error("Task timed out. AI generation is taking longer than expected.");
+  return result;
 }

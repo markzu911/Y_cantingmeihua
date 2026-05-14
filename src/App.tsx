@@ -118,7 +118,7 @@ export default function App() {
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const maxSide = 1024; // Optimized from 1600 to 1280 or 1024 as requested
+        const maxSide = 1600;
 
         // Calculate scaling
         if (width > height) {
@@ -144,7 +144,7 @@ export default function App() {
         }
 
         // Convert to highly compressed JPEG
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75); // Optimized from 0.85 to 0.75-0.8 as requested
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
         const base64 = compressedDataUrl.split(',')[1];
         
         setOriginalImage({
@@ -166,30 +166,10 @@ export default function App() {
   const handleAnalyze = async () => {
     if (!originalImage) return;
     
-    // Verify Phase
-    if (userId && toolId) {
-      setIsAnalyzing(true);
-      try {
-        const verifyRes = await fetch('/api/tool/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        });
-        const verifyData = await verifyRes.json();
-        if (!verifyData.success) {
-          setError(verifyData.message || '积分不足');
-          setIsAnalyzing(false);
-          return;
-        }
-      } catch (err) {
-        console.error('Verify failed:', err);
-      }
-    }
-
     setIsAnalyzing(true);
     setError(null);
     try {
-      const result = await analyzeRestaurantImage(originalImage.base64, originalImage.mimeType);
+      const result = await analyzeRestaurantImage(originalImage.base64, originalImage.mimeType, userId, toolId);
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
@@ -204,26 +184,6 @@ export default function App() {
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
     
-    // Verify Phase before starting beautification
-    if (userId && toolId) {
-      setIsBeautifying(true);
-      try {
-        const verifyRes = await fetch('/api/tool/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        });
-        const verifyData = await verifyRes.json();
-        if (!verifyData.success) {
-          setError(verifyData.message || '积分不足');
-          setIsBeautifying(false);
-          return;
-        }
-      } catch (err) {
-        console.error('Verify failed:', err);
-      }
-    }
-
     setIsBeautifying(true);
     setError(null);
     try {
@@ -237,91 +197,23 @@ export default function App() {
         toolId
       );
       
-      const { generatedImage, rawBase64, mimeType } = result;
-      setBeautifiedImage(generatedImage);
-      setHistory(prev => [generatedImage, ...prev]);
+      const { generatedImage, image: saasImage } = result;
+      // Prefer SaaS image URL for persistence, otherwise use the generated base64
+      const finalImageUrl = saasImage?.url || generatedImage;
+      
+      setBeautifiedImage(finalImageUrl);
+      setHistory(prev => [finalImageUrl, ...prev]);
 
-      // SaaS Save Flow (3-Step Binary Upload as per Section 4 & 5)
-      // This avoids 413 Payload Too Large by sending binary directly to OSS
-      if (userId && toolId && rawBase64) {
-        (async () => {
-          try {
-            // 1. Consume Points
-            const consumeRes = await fetch('/api/tool/consume', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, toolId })
-            });
-            const consume = await consumeRes.json();
-            if (!consume.success) throw new Error(consume.error || '积分扣费失败');
-
-            // 2. Convert base64 to Blob robustly
-            const base64Parts = generatedImage.split(',');
-            const base64Data = base64Parts[1];
-            const actualMimeType = base64Parts[0].split(':')[1].split(';')[0];
-            const byteCharacters = atob(base64Data);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-              byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: actualMimeType || mimeType || 'image/png' });
-
-            // 3. Request Direct Upload Token
-            const tokenRes = await fetch('/api/upload/direct-token', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userId,
-                toolId,
-                source: 'result',
-                mimeType: actualMimeType || mimeType || 'image/png',
-                fileName: `restaurant_${Date.now()}.png`,
-                fileSize: blob.size
-              })
-            });
-            const token = await tokenRes.json();
-            if (!token.success) throw new Error(token.error || '获取直传地址失败');
-
-            // 4. Binary Upload to OSS
-            const uploadRes = await fetch(token.uploadUrl, {
-              method: token.method || 'PUT',
-              headers: { 
-                ...token.headers,
-                'Content-Type': actualMimeType || mimeType || 'image/png'
-              },
-              body: blob
-            });
-            if (!uploadRes.ok) throw new Error(`OSS上传失败: ${uploadRes.status}`);
-
-            // 5. Commit Record
-            const commitRes = await fetch('/api/upload/commit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                userId,
-                toolId,
-                source: 'result',
-                objectKey: token.objectKey,
-                fileSize: blob.size
-              })
-            });
-            const commit = await commitRes.json();
-            if (commit.success) {
-              console.log('Successfully saved to SaaS:', commit.url);
-              // Refresh integral to reflect consumption
-              const launchRes = await fetch('/api/tool/launch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId, toolId })
-              });
-              const launch = await launchRes.json();
-              if (launch.success) setUserInfo(launch.data.user);
-            }
-          } catch (saasErr: any) {
-            console.error('SaaS Binary Save Flow Failed:', saasErr.message);
-          }
-        })();
+      // Refresh integral after generation to show current status
+      if (userId && toolId) {
+        fetch('/api/tool/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        }).then(r => r.json())
+          .then(res => {
+            if (res.success) setUserInfo(res.data.user);
+          }).catch(console.error);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
