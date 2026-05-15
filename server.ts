@@ -34,45 +34,34 @@ async function saveImageToSaas({
   userId,
   toolId,
   imageBuffer,
-  source = 'result',
   mimeType = 'image/png',
   fileName
 }: {
   userId: string,
   toolId: string,
   imageBuffer: Buffer,
-  source?: 'source' | 'result',
   mimeType?: string,
   fileName?: string
 }) {
   const saasTimeout = 120000; // 120 seconds
-  const finalFileName = fileName || `${source}-${Date.now()}.jpg`;
+  const finalFileName = fileName || `result-${Date.now()}.png`;
 
-  console.log(`[SaaS Upload] Starting ${source} upload, size: ${imageBuffer.byteLength} bytes`);
+  console.log(`[SaaS Upload] Starting result upload, size: ${imageBuffer.byteLength} bytes`);
 
   // 1. & 2. Parallellize Point Consumption and Direct Token request
-  const tasks: Promise<any>[] = [];
-  
-  if (source === 'result') {
-    tasks.push(axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { timeout: saasTimeout }));
-  } else {
-    tasks.push(Promise.resolve({ data: { success: true } }));
-  }
-
-  tasks.push(axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+  const consumeTask = axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { timeout: saasTimeout });
+  const tokenTask = axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
     userId,
     toolId,
-    source,
+    source: 'result',
     mimeType,
     fileName: finalFileName,
     fileSize: imageBuffer.byteLength
-  }, { timeout: saasTimeout }));
+  }, { timeout: saasTimeout });
 
-  const [consumeRes, tokenRes] = await Promise.all(tasks);
+  const [consumeRes, tokenRes] = await Promise.all([consumeTask, tokenTask]);
   
-  if (source === 'result') {
-    await readJsonResponse(consumeRes);
-  }
+  await readJsonResponse(consumeRes);
   const token = await readJsonResponse(tokenRes);
 
   console.log(`[SaaS Upload] Got token, uploading to OSS...`);
@@ -98,15 +87,15 @@ async function saveImageToSaas({
   const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
     userId,
     toolId,
-    source,
+    source: 'result',
     objectKey: token.objectKey,
     fileName: finalFileName,
     fileSize: imageBuffer.byteLength
   }, { timeout: saasTimeout });
   const commitResult = await readJsonResponse(commitRes);
-  console.log(`[SaaS Upload] Commit success for ${source}`);
+  console.log(`[SaaS Upload] Commit success`);
 
-  if (source === 'result' && !commitResult.savedToRecords) {
+  if (!commitResult.savedToRecords) {
     throw new Error(commitResult.error || '图片入库失败');
   }
 
@@ -162,30 +151,6 @@ async function startServer() {
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
   app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
   app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
-
-  app.post("/api/upload-source", async (req, res) => {
-    try {
-      const { base64Image, mimeType, userId, toolId } = req.body;
-      if (!base64Image || !userId || !toolId) {
-        return res.status(400).json({ success: false, error: "Missing required fields" });
-      }
-
-      const imageBuffer = Buffer.from(base64Image, 'base64');
-      const saasImage = await saveImageToSaas({
-        userId,
-        toolId,
-        imageBuffer,
-        source: 'source',
-        mimeType: mimeType || 'image/jpeg',
-        fileName: `source-${Date.now()}.jpg`
-      });
-
-      res.status(200).json({ success: true, image: saasImage });
-    } catch (error: any) {
-      console.error("[Upload Source] Failed:", error.message);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
@@ -403,7 +368,6 @@ GENERAL CONSTRAINTS:
             userId,
             toolId,
             imageBuffer,
-            source: 'result',
             mimeType: generatedMimeType,
             fileName: `beautified-${Date.now()}.jpg`
           });
