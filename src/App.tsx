@@ -206,50 +206,27 @@ export default function App() {
         originalImage.saasUrl
       );
       
-      const { generatedImage, pendingUpload } = result;
+      const { generatedImage, image: saasImage } = result;
       // Immediately show the AI generated image (base64)
       setBeautifiedImage(generatedImage);
       setHistory(prev => [generatedImage, ...prev]);
 
-      // Handle async save to SaaS via second endpoint (Stage 2: Commit)
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        if (pendingUpload) {
-          const saveStart = Date.now();
-          fetch('/api/save-result', {
+      // Handle SaaS URL if returned (replace preview with full size URL)
+      if (saasImage?.url) {
+        setBeautifiedImage(saasImage.url);
+        setHistory(prev => [saasImage.url, ...prev.filter(img => img !== generatedImage)]);
+        
+        // Refresh integral
+        setTimeout(() => {
+          fetch('/api/tool/launch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId, pendingUpload })
+            body: JSON.stringify({ userId, toolId })
           }).then(r => r.json())
-            .then(saveRes => {
-              console.log(`[SaveResult] took ${Date.now() - saveStart}ms, success:`, saveRes.success);
-              if (saveRes.success) {
-                const saasUrl = saveRes.image?.url;
-                if (saasUrl) {
-                  // Replace the temporary base64 (preview) with the permanent SaaS URL (full size)
-                  setBeautifiedImage(saasUrl);
-                  setHistory(prev => [saasUrl, ...prev.filter(img => img !== generatedImage)]);
-                }
-                // Refresh integral from SaaS
-                setTimeout(() => {
-                  fetch('/api/tool/launch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, toolId })
-                  }).then(r => r.json())
-                    .then(res => {
-                      if (res.success) setUserInfo(res.data.user);
-                    }).catch(console.error);
-                }, 1000);
-              } else {
-                setError(`图片生成成功，但保存到“我的图片”失败: ${saveRes.error || '接口未返回具体原因'}`);
-              }
-            }).catch(err => {
-              console.error('[SaveResult] network error:', err);
-              setError('图片生成成功，但保存到“我的图片”失败 (网络错误)');
-            });
-        } else {
-          setError('图片生成成功，但由于文件过大或上传通道故障，无法保存到“我的图片”。您可以长按图片手动保存。');
-        }
+            .then(res => {
+              if (res.success) setUserInfo(res.data.user);
+            }).catch(console.error);
+        }, 3000);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
