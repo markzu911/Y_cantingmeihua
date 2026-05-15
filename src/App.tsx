@@ -25,7 +25,7 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; file?: File; saasUrl?: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -121,7 +121,8 @@ export default function App() {
       setOriginalImage({
         base64,
         mimeType,
-        url: dataUrl
+        url: dataUrl,
+        file
       });
       
       setAnalysisResult(null);
@@ -146,7 +147,8 @@ export default function App() {
         originalImage.saasUrl ? null : originalImage.mimeType, 
         userId, 
         toolId,
-        originalImage.saasUrl
+        originalImage.saasUrl,
+        originalImage.file
       );
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
@@ -173,7 +175,8 @@ export default function App() {
         allowAdditions,
         userId,
         toolId,
-        originalImage.saasUrl
+        originalImage.saasUrl,
+        originalImage.file
       );
       
       const { generatedImage } = result;
@@ -199,32 +202,93 @@ export default function App() {
     }
   };
 
-  const handleAsyncSaasSave = async (base64: string) => {
+  const handleAsyncSaasSave = async (dataUrl: string) => {
     if (!userId || !toolId) return;
     
     try {
-      const response = await fetch('/api/saas/save-result', {
+      // Helper function to convert data URL to Blob
+      const [header, base64Data] = dataUrl.split(',');
+      const mimeMatch = header.match(/:(.*?);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      
+      const byteCharacters = atob(base64Data);
+      const byteArrays = [];
+      for (let offset = 0; offset < byteCharacters.length; offset += 1024) {
+        const slice = byteCharacters.slice(offset, offset + 1024);
+        const byteNumbers = new Array(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+          byteNumbers[i] = slice.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        byteArrays.push(byteArray);
+      }
+      const blob = new Blob(byteArrays, { type: mimeType });
+      const fileSize = blob.size;
+      const fileName = `beautified-${Date.now()}.${mimeType.split('/')[1] || 'png'}`;
+
+      // 1. Consume points
+      const consumeRes = await fetch('/api/tool/consume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, toolId })
+      });
+      const consumeData = await consumeRes.json();
+      if (!consumeData || consumeData.success === false) {
+        throw new Error(consumeData?.error || 'Consumption failed');
+      }
+
+      // 2. Get direct upload token
+      const tokenRes = await fetch('/api/upload/direct-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          base64Image: base64,
           userId,
-          toolId
+          toolId,
+          source: 'result',
+          mimeType,
+          fileName,
+          fileSize
         })
       });
-      
-      const result = await response.json();
-      if (result.success && result.image?.url) {
-        // Update the image URL with the SaaS URL once it's saved
-        const saasUrl = result.image.url;
+      const tokenData = await tokenRes.json();
+      if (!tokenData || tokenData.success === false) {
+        throw new Error(tokenData?.error || 'Failed to get upload token');
+      }
+
+      // 3. Upload directly to OSS
+      const uploadRes = await fetch(tokenData.data.uploadUrl || tokenData.uploadUrl, {
+        method: tokenData.data.method || tokenData.method || 'PUT',
+        headers: {
+          ...(tokenData.data.headers || tokenData.headers || {}),
+          'Content-Type': mimeType
+        },
+        body: blob
+      });
+      if (!uploadRes.ok) throw new Error('Direct OSS upload failed');
+
+      // 4. Commit upload
+      const commitRes = await fetch('/api/upload/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          toolId,
+          source: 'result',
+          objectKey: tokenData.data.objectKey || tokenData.objectKey,
+          fileSize
+        })
+      });
+      const commitData = await commitRes.json();
+      if (!commitData || commitData.success === false || !(commitData.data?.savedToRecords || commitData.savedToRecords)) {
+        throw new Error(commitData?.error || 'Commit failed or record not saved');
+      }
+
+      // Update UI with the final SaaS URL
+      const saasUrl = commitData.data?.image?.url || commitData.image?.url;
+      if (saasUrl) {
         setBeautifiedImage(saasUrl);
-        // Replace the base64 in history with the permanent URL
         setHistory(prev => [saasUrl, ...prev.slice(1)]);
-        
-        // Refresh integral after short delay
         setTimeout(refreshIntegral, 1000);
-      } else {
-        console.warn('SaaS save failed, but image was generated.');
       }
     } catch (err) {
       console.warn('Async SaaS save error:', err);

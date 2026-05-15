@@ -4,10 +4,18 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import axios from "axios";
+import multer from "multer";
 
 dotenv.config({ override: true });
 
 const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
+
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB
+  }
+});
 
 const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
   return Promise.race([
@@ -187,26 +195,34 @@ async function startServer() {
   });
 
   // API routes
-  app.post("/api/analyze", async (req, res) => {
+  app.post("/api/analyze", upload.single('image'), async (req, res) => {
     try {
       const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
 
       // Verify points if SaaS info is provided
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
-          await verifyBeforeGenerate({ userId, toolId });
+           await verifyBeforeGenerate({ userId, toolId });
         } catch (error: any) {
           return res.status(403).json({ success: false, error: error.message });
         }
       }
 
-      let dataToUse = base64Image;
-      let mimeToUse = mimeType;
+      let dataToUse: string;
+      let mimeToUse: string;
 
-      if (imageUrl && !base64Image) {
+      if (req.file) {
+        dataToUse = req.file.buffer.toString('base64');
+        mimeToUse = req.file.mimetype;
+      } else if (imageUrl && !base64Image) {
         const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
         dataToUse = Buffer.from(fetchRes.data).toString('base64');
         mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+      } else if (base64Image) {
+        dataToUse = base64Image;
+        mimeToUse = mimeType || 'image/jpeg';
+      } else {
+        return res.status(400).json({ success: false, error: "No image provided" });
       }
 
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
@@ -283,10 +299,15 @@ async function startServer() {
     }
   });
 
-  app.post("/api/beautify", async (req, res) => {
+  app.post("/api/beautify", upload.single('image'), async (req, res) => {
     const totalStart = Date.now();
     try {
-      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      let { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      
+      // Parse JSON strings if sent via multipart/form-data
+      if (typeof analysis === 'string') analysis = JSON.parse(analysis);
+      if (typeof options === 'string') options = JSON.parse(options);
+      if (typeof allowAdditions === 'string') allowAdditions = allowAdditions === 'true';
       
       // Step 2: Verify points if SaaS info is provided
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
@@ -300,14 +321,22 @@ async function startServer() {
       }
 
       const getOrigStart = Date.now();
-      let dataToUse = base64Image;
-      let mimeToUse = mimeType;
+      let dataToUse: string;
+      let mimeToUse: string;
 
-      if (imageUrl && !base64Image) {
+      if (req.file) {
+        dataToUse = req.file.buffer.toString('base64');
+        mimeToUse = req.file.mimetype;
+      } else if (imageUrl && !base64Image) {
         const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
         dataToUse = Buffer.from(fetchRes.data).toString('base64');
         mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
         console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
+      } else if (base64Image) {
+        dataToUse = base64Image;
+        mimeToUse = mimeType || 'image/jpeg';
+      } else {
+        return res.status(400).json({ success: false, error: "No image provided" });
       }
 
       const geminiStart = Date.now();

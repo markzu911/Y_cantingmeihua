@@ -14,20 +14,37 @@ export async function analyzeRestaurantImage(
   mimeType: string | null,
   userId?: string | null,
   toolId?: string | null,
-  imageUrl?: string | null
+  imageUrl?: string | null,
+  file?: File | null
 ): Promise<AnalysisResult> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
   try {
-    const response = await fetch("/api/analyze", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ base64Image, imageUrl, mimeType, userId, toolId }),
-      signal: controller.signal,
-    });
+    let response;
+    
+    if (file) {
+      const formData = new FormData();
+      formData.append('image', file);
+      if (userId) formData.append('userId', userId);
+      if (toolId) formData.append('toolId', toolId);
+      if (imageUrl) formData.append('imageUrl', imageUrl);
+      
+      response = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+    } else {
+      response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ base64Image, imageUrl, mimeType, userId, toolId }),
+        signal: controller.signal,
+      });
+    }
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
@@ -64,29 +81,49 @@ export async function beautifyRestaurantImage(
   allowAdditions: boolean,
   userId?: string | null,
   toolId?: string | null,
-  imageUrl?: string | null
+  imageUrl?: string | null,
+  file?: File | null
 ): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
   try {
-    const response = await fetch("/api/beautify", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        base64Image,
-        imageUrl,
-        mimeType,
-        analysis,
-        options,
-        allowAdditions,
-        userId,
-        toolId
-      }),
-      signal: controller.signal,
-    });
+    let response;
+    
+    if (file) {
+      const formData = new FormData();
+      formData.append('image', file);
+      formData.append('analysis', JSON.stringify(analysis));
+      formData.append('options', JSON.stringify(options));
+      formData.append('allowAdditions', String(allowAdditions));
+      if (userId) formData.append('userId', userId);
+      if (toolId) formData.append('toolId', toolId);
+      if (imageUrl) formData.append('imageUrl', imageUrl);
+      
+      response = await fetch("/api/beautify", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+    } else {
+      response = await fetch("/api/beautify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          base64Image,
+          imageUrl,
+          mimeType,
+          analysis,
+          options,
+          allowAdditions,
+          userId,
+          toolId
+        }),
+        signal: controller.signal,
+      });
+    }
 
     const result = await response.json().catch(() => ({ success: false, error: "Network error or timeout" }));
 
