@@ -285,8 +285,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       // Convert generated image to Buffer and process with Sharp
       let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
       try {
-        // Optimization: Don't force massive upscale, use standard 4K width
         const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
+        const quality = options.quality ? Math.floor(options.quality * 100) : 80;
         
         imageBuffer = await sharp(imageBuffer)
           .rotate() 
@@ -294,11 +294,11 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
             width: resizeLimit, 
             height: resizeLimit, 
             fit: 'inside', 
-            withoutEnlargement: true // Never force upscale to save time/ram
+            withoutEnlargement: true 
           })
           .jpeg({ 
-            quality: 90, // Balanced quality
-            force: true 
+            quality: quality, 
+            mozjpeg: true 
           })
           .toBuffer();
         

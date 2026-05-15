@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins } from 'lucide-react';
 import { analyzeRestaurantImage, beautifyRestaurantImage, AnalysisResult } from './lib/gemini';
+import { compressImage } from './lib/imageUtils';
 
 // Add type definition for window.aistudio
 declare global {
@@ -34,7 +35,8 @@ export default function App() {
   const [options, setOptions] = useState({
     ratio: '1:1',
     lighting: '暖色调',
-    resolution: '1K'
+    resolution: '1K',
+    quality: 0.8
   });
   
   const [allowAdditions, setAllowAdditions] = useState(false);
@@ -106,32 +108,32 @@ export default function App() {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      const mimeType = file.type || 'image/jpeg';
-      const base64 = dataUrl.split(',')[1];
+    setError(null);
+    try {
+      // Compress image client-side before processing
+      const compressed = await compressImage(file, 2048, 2048, options.quality);
       
-      // Immediately set original image for preview
       setOriginalImage({
-        base64,
-        mimeType,
-        url: dataUrl
+        base64: compressed.base64,
+        mimeType: compressed.mimeType,
+        url: compressed.url
       });
       
       setAnalysisResult(null);
       setBeautifiedImage(null);
       setHistory([]);
-      setError(null);
       setActiveTab('analysis');
+    } catch (err: any) {
+      setError('图片处理失败: ' + (err.message || '未知错误'));
+      console.error(err);
+    } finally {
       setIsUploading(false);
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   const handleAnalyze = async () => {
@@ -587,30 +589,47 @@ export default function App() {
                     </div>
                   )}
 
-                  {activeTab === 'settings' && (
-                    <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                      {[
-                        { label: '图片比例', key: 'ratio', options: ['1:1', '3:4', '4:3', '9:16', '16:9'] },
-                        { label: '艺术基调', key: 'lighting', options: ['暖色调', '清新浅色', '高端暗色'] },
-                        { label: '数字分辨率', key: 'resolution', options: ['1K', '2K', '4K'] }
-                      ].map((group) => (
-                        <div key={group.key}>
-                          <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-3 sm:mb-4">{group.label}</label>
-                          <div className="flex flex-wrap gap-2 sm:gap-2.5">
-                            {group.options.map(val => (
-                              <button
-                                key={val}
-                                onClick={() => setOptions({...options, [group.key]: val})}
-                                className={`px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all border ${options[group.key as keyof typeof options] === val ? 'bg-[#3D3935] border-[#3D3935] text-white shadow-lg sm:shadow-xl' : 'bg-white border-[#EAE3DC] text-[#6B6661] hover:border-[#8DA399] hover:bg-[#FDFCFB]'}`}
-                              >
-                                {val}
-                              </button>
-                            ))}
+                      {activeTab === 'settings' && (
+                        <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                          {[
+                            { label: '图片比例', key: 'ratio', options: ['1:1', '3:4', '4:3', '9:16', '16:9'] },
+                            { label: '艺术基调', key: 'lighting', options: ['暖色调', '清新浅色', '高端暗色'] },
+                            { label: '输出分辨率', key: 'resolution', options: ['1K', '2K', '4K'] }
+                          ].map((group) => (
+                            <div key={group.key}>
+                              <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-3 sm:mb-4">{group.label}</label>
+                              <div className="flex flex-wrap gap-2 sm:gap-2.5">
+                                {group.options.map(val => (
+                                  <button
+                                    key={val}
+                                    onClick={() => setOptions({...options, [group.key]: val})}
+                                    className={`px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all border ${options[group.key as keyof typeof options] === val ? 'bg-[#3D3935] border-[#3D3935] text-white shadow-lg sm:shadow-xl' : 'bg-white border-[#EAE3DC] text-[#6B6661] hover:border-[#8DA399] hover:bg-[#FDFCFB]'}`}
+                                  >
+                                    {val}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+
+                          <div>
+                            <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-4">压缩画质 (节省流量 & 避免超时)</label>
+                            <div className="flex items-center gap-4">
+                              <input 
+                                type="range" 
+                                min="0.1" 
+                                max="1.0" 
+                                step="0.1" 
+                                value={options.quality}
+                                onChange={(e) => setOptions({...options, quality: parseFloat(e.target.value)})}
+                                className="flex-1 accent-[#8DA399] h-1.5 bg-[#EAE3DC] rounded-lg appearance-none cursor-pointer"
+                              />
+                              <span className="text-xs font-bold text-[#3D3935] w-8">{Math.round(options.quality * 100)}%</span>
+                            </div>
+                            <p className="text-[10px] text-[#9B9691] mt-2 leading-relaxed">降低画质可显著减少图片体积，提升在弱网环境下的生成成功率。</p>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      )}
                 </div>
 
                 {/* Footer Action */}

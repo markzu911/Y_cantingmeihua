@@ -382,15 +382,33 @@ GENERAL CONSTRAINTS:
       }
 
       const sharpStart = Date.now();
-      // Step 7: Internal image processing (Sharp) - minimal processing to keep quality
+      // Step 7: Internal image processing (Sharp)
       let imageBuffer = Buffer.from(generatedBase64, 'base64');
       
-      imageBuffer = await sharp(imageBuffer)
-        .rotate() 
-        .toBuffer();
+      try {
+        const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
+        const quality = options.quality ? Math.floor(options.quality * 100) : 80;
 
-      generatedMimeType = "image/png";
-      console.log(`[Beautify] Sharp processing (rotate only) took ${Date.now() - sharpStart}ms`);
+        imageBuffer = await sharp(imageBuffer)
+          .rotate() 
+          .resize({ 
+            width: resizeLimit, 
+            height: resizeLimit, 
+            fit: 'inside', 
+            withoutEnlargement: true 
+          })
+          .jpeg({ 
+            quality: quality, 
+            mozjpeg: true 
+          })
+          .toBuffer();
+
+        generatedMimeType = "image/jpeg";
+      } catch (err) {
+        console.error('Sharp processing failed:', err);
+      }
+      
+      console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
