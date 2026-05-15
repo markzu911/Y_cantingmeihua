@@ -152,6 +152,41 @@ async function startServer() {
   app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
   app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
+  app.post("/api/saas/save-result", async (req, res) => {
+    try {
+      const { base64Image, userId, toolId, mimeType } = req.body;
+      if (!base64Image || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: "Missing required fields for SaaS save" });
+      }
+
+      // Convert data URL to buffer if needed
+      let buffer: Buffer;
+      let finalMime = mimeType || 'image/png';
+      
+      if (base64Image.startsWith('data:')) {
+        const parts = base64Image.split(',');
+        buffer = Buffer.from(parts[1], 'base64');
+        const match = parts[0].match(/data:(.*?);/);
+        if (match) finalMime = match[1];
+      } else {
+        buffer = Buffer.from(base64Image, 'base64');
+      }
+
+      const saasImage = await saveImageToSaas({
+        userId,
+        toolId,
+        imageBuffer: buffer,
+        mimeType: finalMime,
+        fileName: `beautified-${Date.now()}.png`
+      });
+
+      res.status(200).json({ success: true, image: saasImage });
+    } catch (error: any) {
+      console.error("[SaaS Save Result] Failed:", error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
@@ -359,30 +394,10 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
-      // Save result to SaaS (Must Await)
-      let saasImage = null;
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasStart = Date.now();
-        try {
-          saasImage = await saveImageToSaas({
-            userId,
-            toolId,
-            imageBuffer,
-            mimeType: generatedMimeType,
-            fileName: `beautified-${Date.now()}.jpg`
-          });
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
-        }
-      }
-
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64,
-        image: saasImage
+        generatedImage: resultBase64
       });
     } catch (error: any) {
       console.error(error);

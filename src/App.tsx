@@ -40,6 +40,7 @@ export default function App() {
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
+  const [isSavingToSaas, setIsSavingToSaas] = useState(false);
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -175,25 +176,15 @@ export default function App() {
         originalImage.saasUrl
       );
       
-      const { generatedImage, image: saasImage } = result;
+      const { generatedImage } = result;
       // Immediately show the AI generated image (base64)
-      const finalUrl = saasImage?.url || generatedImage;
-      setBeautifiedImage(finalUrl);
-      setHistory(prev => [finalUrl, ...prev]);
+      setBeautifiedImage(generatedImage);
+      setHistory(prev => [generatedImage, ...prev]);
 
-      // Refresh integral after generation
+      // Step 2: Async Save to SaaS (Points deduction & Gallery)
       if (userId && toolId) {
-        // Delay point refresh slightly as it happens asynchronously on server
-        setTimeout(() => {
-          fetch('/api/tool/launch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId })
-          }).then(r => r.json())
-            .then(res => {
-              if (res.success) setUserInfo(res.data.user);
-            }).catch(console.error);
-        }, 3000);
+        setIsSavingToSaas(true);
+        handleAsyncSaasSave(generatedImage);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
@@ -205,6 +196,55 @@ export default function App() {
       }
     } finally {
       setIsBeautifying(false);
+    }
+  };
+
+  const handleAsyncSaasSave = async (base64: string) => {
+    if (!userId || !toolId) return;
+    
+    try {
+      const response = await fetch('/api/saas/save-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base64Image: base64,
+          userId,
+          toolId
+        })
+      });
+      
+      const result = await response.json();
+      if (result.success && result.image?.url) {
+        // Update the image URL with the SaaS URL once it's saved
+        const saasUrl = result.image.url;
+        setBeautifiedImage(saasUrl);
+        // Replace the base64 in history with the permanent URL
+        setHistory(prev => [saasUrl, ...prev.slice(1)]);
+        
+        // Refresh integral after short delay
+        setTimeout(refreshIntegral, 1000);
+      } else {
+        console.warn('SaaS save failed, but image was generated.');
+      }
+    } catch (err) {
+      console.warn('Async SaaS save error:', err);
+    } finally {
+      setIsSavingToSaas(false);
+    }
+  };
+
+  const refreshIntegral = async () => {
+    if (!userId || !toolId) return;
+    try {
+      const response = await fetch('/api/tool/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, toolId })
+      });
+      const res = await response.json();
+      if (res.success) setUserInfo(res.data.user);
+    } catch (err) {
+      console.error('Points refresh failed:', err);
     }
   };
 
@@ -384,6 +424,12 @@ export default function App() {
                   onClick={() => setIsModalOpen(true)}
                 >
                   <img src={beautifiedImage} alt="Beautified" className="max-w-full max-h-full object-contain sm:group-hover:scale-[1.03] transition-transform duration-700 ease-out" />
+                  {isSavingToSaas && (
+                    <div className="absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/50 shadow-sm transition-all animate-pulse">
+                      <Loader2 className="w-3 h-3 animate-spin text-[#8DA399]" />
+                      <span className="text-[10px] font-bold text-[#6B6661]">正在同步作品至图库...</span>
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-[#3D3935]/0 sm:group-hover:bg-[#3D3935]/10 transition-colors duration-500 flex items-center justify-center">
                     <span className="opacity-0 sm:group-hover:opacity-100 bg-white/95 text-[#3D3935] px-4 sm:px-6 py-2 sm:py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold shadow-2xl transition-all duration-500 transform translate-y-4 group-hover:translate-y-0">全屏查看细节</span>
                   </div>
