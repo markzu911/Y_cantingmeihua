@@ -38,72 +38,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
 
-  // Helper to save result image to SaaS following the standard flow
-  const saveResultImageToSaas = async (userId: string, toolId: string, imageBuffer: Buffer, mimeType: string = 'image/png') => {
-    if (userId === 'null' || userId === 'undefined' || !userId) throw new Error('Invalid User ID');
-    if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
-
-    // 1. Consume points
-    const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, toolId })
-    });
-    const consume = await consumeRes.json();
-    if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
-
-    // 2. Direct Token
-    const finalFileName = `beautified-${Date.now()}.jpg`;
-    const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        toolId,
-        source: 'result',
-        mimeType,
-        fileName: finalFileName,
-        fileSize: imageBuffer.length
-      })
-    });
-    const token = await tokenRes.json();
-    if (!token.success) throw new Error(token.error || '获取上传凭证失败');
-
-    // 3. PUT to OSS
-    const uploadRes = await fetch(token.uploadUrl, {
-      method: token.method || 'PUT',
-      headers: {
-        ...(token.headers || {}),
-        'Content-Type': token.headers?.['Content-Type'] || mimeType
-      },
-      body: imageBuffer
-    });
-    if (!uploadRes.ok) throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-
-    // 4. Commit
-    const commitRes = await fetch(`${SAAS_ORIGIN}/api/upload/commit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        toolId,
-        source: 'result',
-        objectKey: token.objectKey,
-        fileSize: imageBuffer.length
-      })
-    });
-    const commitResult = await commitRes.json();
-    if (!commitResult.success || !commitResult.savedToRecords) {
-      throw new Error(commitResult.error || '图片入库失败');
-    }
-
-    return commitResult.image || {
-      recordId: commitResult.recordId,
-      url: commitResult.url,
-      fileName: commitResult.fileName,
-      fileSize: imageBuffer.length
-    };
-  };
+  // Note: Vercel serverless has 4MB/10MB limits and maxDuration.
+  // This proxy stays for compatibility but the main logic is in server.ts (Node).
 
   try {
     // 1. Tool & Upload Proxy
@@ -305,39 +241,45 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         console.error('Sharp processing failed:', sharpError);
       }
 
-      // Save result to SaaS (Wait for success)
-      let saasImage = null;
+      const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
+      
+      // Upload result to OSS (Stage 1 of save process)
+      let pendingUpload = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
-          const saasStart = Date.now();
-          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-          console.log(`[Beautify] SaaS save and commit took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片已生成，但保存失败: ${saveError.message}` });
+          const uploadStart = Date.now();
+          pendingUpload = await uploadToOssOnly(userId, toolId, imageBuffer, generatedMimeType);
+          console.log(`[Beautify] OSS upload took ${Date.now() - uploadStart}ms`);
+        } catch (uploadError: any) {
+          console.error('[Beautify] Background OSS upload failed:', uploadError.message);
+          // We don't fail the whole beautify request if background upload fails, 
+          // because the user already has the generated image base64 for preview.
         }
-      }
-
-      // Create a small preview for the response to avoid Vercel 4.5MB payload limit
-      let previewBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-      try {
-        const previewBuffer = await sharp(imageBuffer)
-          .resize({ width: 1200, withoutEnlargement: true })
-          .jpeg({ quality: 80 })
-          .toBuffer();
-        previewBase64 = `data:image/jpeg;base64,${previewBuffer.toString('base64')}`;
-      } catch (previewError) {
-        console.error('Preview generation failed:', previewError);
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: previewBase64,
-        image: saasImage
+        generatedImage: finalImageBase64,
+        pendingUpload
       });
     }
 
+    // 4. Save Result (Stage 2: Consume + Commit)
+    if (url.includes('/api/save-result')) {
+      const { pendingUpload, userId, toolId } = req.body;
+      if (!pendingUpload || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: '缺少保存所需的必要元数据' });
+      }
+
+      try {
+        const saasImage = await commitSaasResult(userId, toolId, pendingUpload);
+        return res.status(200).json({ success: true, image: saasImage });
+      } catch (saveError: any) {
+        console.error('[SaveResult] commit failed:', saveError.message);
+        return res.status(500).json({ success: false, error: saveError.message || '图片持久化失败' });
+      }
+    }
 
     // 5. Generic Gemini fallback
     if (url.includes('/api/gemini')) {
