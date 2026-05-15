@@ -25,8 +25,8 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   try {
-    // 1. Tool Proxy
-    if (url.includes('/api/tool/')) {
+    // 1. Tool Proxy & Upload Proxy
+    if (url.includes('/api/tool/') || url.includes('/api/upload/direct-token') || url.includes('/api/upload/commit')) {
       const targetPath = url.includes('?') ? url : url; 
       const targetUrl = `http://aibigtree.com${targetPath}`;
       const response = await fetch(targetUrl, {
@@ -90,11 +90,29 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
         : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-      const prompt = `You are a top-tier professional photo editor and interior designer. Execute EVERY SINGLE initial request for this restaurant.
-      TARGET POINTS: ${analysis.beautifyPoints.join(', ')}.
-      MANDATORY: Clean floors perfectly, remove table clutter, apply "${options.lighting}" lighting effect.
-      ${additionRules}
-      CRITICAL: DO NOT change structural layout (windows, doors, walls). HIGHLY REALISTIC finish.`;
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image.
+
+CRITICAL STRUCTURAL RULES (NEVER VIOLATE):
+1. Keep the original spatial structure, doors, windows, walls, table and chair positions, and main layout EXACTLY the same.
+2. DO NOT add new doors or windows, DO NOT change the architectural structure, and DO NOT significantly change the number or position of tables and chairs.
+3. This is STRICTLY for cleaning, beautifying, material restoring, lighting, and soft furnishing.
+
+MANDATORY BASELINE & BEAUTIFICATION POINTS:
+1. FLOOR: Must be completely clean, intact, and have premium texture. Remove all dirt, stains, damages, and dark spots.
+2. WALLS: Can be restored, brightened, and color-unified, but DO NOT change the wall structure.
+3. TABLES: Remove all clutter, keep reasonable restaurant items (tissue boxes, condiments) and organize them neatly.
+4. ATMOSPHERE: Apply a "${options.lighting}" lighting effect.
+5. USER'S SPECIFIC POINTS:
+${analysis.beautifyPoints.map((p: string, i: number) => `   - ${p}`).join('\n')}
+
+DECORATION RULES:
+${allowAdditions && additionsToApply.length > 0
+  ? `The user ENABLED decorations. You MUST add ONLY the following checked items: \n${additionsToApply.join(', ')}. DO NOT add any other extra items (no extra plants, no extra lamps, no extra ornaments).`
+  : `The user DISABLED decorations. DO NOT add ANY new decorations, new plants, new lamps, or new ornaments. Keep it purely renovation.`}
+
+STYLE RULES:
+- Output must be highly realistic and natural, like a professional interior photography.
+- NO cartoon style, NO over-rendering, NO text, NO watermarks, NO logos, and NO explanatory text.`;
       
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",

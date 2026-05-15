@@ -203,33 +203,115 @@ export default function App() {
 
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
-    setIsBeautifying(true);
+    
+    // 1. Verify Before Generation
+    if (userId && toolId) {
+      setIsBeautifying(true);
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setError(verifyData.message || '积分不足');
+          setIsBeautifying(false);
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    } else {
+      setIsBeautifying(true);
+    }
+
     setError(null);
     try {
-      const resultImage = await beautifyRestaurantImage(
+      // 2. AI Generate
+      const resultImageBase64 = await beautifyRestaurantImage(
         originalImage.base64,
         originalImage.mimeType,
         analysisResult,
         options,
         allowAdditions
       );
-      setBeautifiedImage(resultImage);
-      setHistory(prev => [resultImage, ...prev]);
 
-      // Consume Phase
+      // Display immediately
+      setBeautifiedImage(resultImageBase64);
+      setHistory(prev => [resultImageBase64, ...prev]);
+
+      // 3. Consume
       if (userId && toolId) {
-        try {
-          const consumeRes = await fetch('/api/tool/consume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId })
+        let currentIntegral = userInfo?.integral;
+        const consumeRes = await fetch('/api/tool/consume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const consumeData = await consumeRes.json();
+        
+        if (!consumeData.success) {
+           console.error("consume failed, skip upload", consumeData);
+           return;
+        }
+        
+        if (consumeData.success && consumeData.data) {
+          currentIntegral = consumeData.data.currentIntegral;
+          setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+        }
+
+        // 4. Direct Token
+        const base64Data = resultImageBase64.replace(/^data:image\/\w+;base64,/, '');
+        const binaryString = window.atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const fileSize = bytes.byteLength;
+        const blob = new Blob([bytes], { type: 'image/png' }); // Gemini typically returns PNG for images
+
+        const tokenRes = await fetch('/api/upload/direct-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId, source: 'result', mimeType: 'image/png', fileName: 'result.png', fileSize })
+        });
+        const token = await tokenRes.json();
+
+        if (token.success) {
+          // 6. PUT to OSS
+          const uploadRes = await fetch(token.uploadUrl, {
+            method: token.method || 'PUT',
+            headers: token.headers,
+            body: blob
           });
-          const consumeData = await consumeRes.json();
-          if (consumeData.success) {
-            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+
+          if (uploadRes.ok) {
+            // 7. Commit
+            const commitRes = await fetch('/api/upload/commit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId,
+                toolId,
+                source: 'result',
+                objectKey: token.objectKey,
+                fileSize
+              })
+            });
+            const commit = await commitRes.json();
+            if (commit.savedToRecords) {
+                console.log("Successfully uploaded to SaaS OSS and committed:", commit.image);
+                if (commit.image && commit.image.url) {
+                  setBeautifiedImage(commit.image.url);
+                  setHistory(prev => {
+                    const newHistory = [...prev];
+                    newHistory[0] = commit.image.url;
+                    return newHistory;
+                  });
+                }
+            }
           }
-        } catch (err) {
-          console.error('Consume failed:', err);
         }
       }
     } catch (err: any) {

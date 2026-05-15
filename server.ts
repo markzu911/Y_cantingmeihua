@@ -50,6 +50,8 @@ async function startServer() {
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
+  app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
@@ -141,23 +143,29 @@ async function startServer() {
         ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
         : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image.
 
-CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
-USER'S BEAUTIFICATION POINTS:
-${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
+CRITICAL STRUCTURAL RULES (NEVER VIOLATE):
+1. Keep the original spatial structure, doors, windows, walls, table and chair positions, and main layout EXACTLY the same.
+2. DO NOT add new doors or windows, DO NOT change the architectural structure, and DO NOT significantly change the number or position of tables and chairs.
+3. This is STRICTLY for cleaning, beautifying, material restoring, lighting, and soft furnishing.
 
-MANDATORY BASELINE (ALWAYS APPLY):
-- FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
-- TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
-- ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
+MANDATORY BASELINE & BEAUTIFICATION POINTS:
+1. FLOOR: Must be completely clean, intact, and have premium texture. Remove all dirt, stains, damages, and dark spots.
+2. WALLS: Can be restored, brightened, and color-unified, but DO NOT change the wall structure.
+3. TABLES: Remove all clutter, keep reasonable restaurant items (tissue boxes, condiments) and organize them neatly.
+4. ATMOSPHERE: Apply a "${options.lighting}" lighting effect.
+5. USER'S SPECIFIC POINTS:
+${analysis.beautifyPoints.map((p: string, i: number) => `   - ${p}`).join('\n')}
 
-${additionRules}
+DECORATION RULES:
+${allowAdditions && additionsToApply.length > 0
+  ? `The user ENABLED decorations. You MUST add ONLY the following checked items: \n${additionsToApply.join(', ')}. DO NOT add any other extra items (no extra plants, no extra lamps, no extra ornaments).`
+  : `The user DISABLED decorations. DO NOT add ANY new decorations, new plants, new lamps, or new ornaments. Keep it purely renovation.`}
 
-GENERAL CONSTRAINTS:
-- CRITICAL STRUCTURAL RULE: DO NOT change the structural layout of the room under any circumstances. ABSOLUTELY NO adding new windows, NO adding new doors, and NO changing the architectural structure (walls, ceilings, pillars). You are ONLY allowed to do soft furnishings, cleaning, and surface renovations.
-- Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
-- Make the final image look highly realistic, spotless, and premium.`;
+STYLE RULES:
+- Output must be highly realistic and natural, like a professional interior photography.
+- NO cartoon style, NO over-rendering, NO text, NO watermarks, NO logos, and NO explanatory text.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
@@ -198,77 +206,6 @@ GENERAL CONSTRAINTS:
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/upload", async (req, res) => {
-    try {
-      const { userId, toolId, base64Image, mimeType = "image/png", fileName = "result.png" } = req.body;
-      
-      if (!userId || !toolId || !base64Image) {
-        return res.status(400).json({ success: false, error: 'Missing required parameters' });
-      }
-
-      const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-      const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
-
-      // 1. Consume
-      const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { validateStatus: () => true });
-      if (!consumeRes.data.success) {
-        throw new Error(consumeRes.data.message || consumeRes.data.error || '积分扣除失败');
-      }
-
-      // 2. Get direct token
-      const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-        userId,
-        toolId,
-        source: 'result',
-        mimeType,
-        fileName,
-        fileSize: imageBuffer.byteLength
-      }, { validateStatus: () => true });
-      const token = tokenRes.data;
-      if (!token.success) throw new Error(token.error || token.message || '获取上传凭证失败');
-
-      // 3. Upload to OSS
-      const uploadRes = await fetch(token.uploadUrl, {
-        method: token.method || 'PUT',
-        headers: token.headers,
-        body: imageBuffer
-      });
-      if (!uploadRes.ok) {
-        throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-      }
-
-      // 4. Commit
-      const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
-        userId,
-        toolId,
-        source: 'result',
-        objectKey: token.objectKey,
-        fileSize: imageBuffer.byteLength
-      }, { validateStatus: () => true });
-      const commit = commitRes.data;
-      if (!commit.savedToRecords) {
-        throw new Error(commit.error || commit.message || '图片入库失败');
-      }
-
-      // Return the recommended format
-      res.json({
-        success: true,
-        images: [
-          commit.image || {
-            recordId: commit.recordId,
-            url: commit.url,
-            fileName: commit.fileName,
-            fileSize: imageBuffer.byteLength
-          }
-        ]
-      });
-    } catch (error: any) {
-      console.error('Upload Error:', error);
-      res.status(500).json({ success: false, error: error.message || '保存失败' });
     }
   });
 
