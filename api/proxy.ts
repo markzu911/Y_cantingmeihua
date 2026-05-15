@@ -56,8 +56,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
 
     // 2. Direct Token
-    const extension = mimeType.includes('jpeg') ? 'jpg' : (mimeType.includes('webp') ? 'webp' : 'png');
-    const finalFileName = `result-${Date.now()}.${extension}`;
+    const finalFileName = `beautified-${Date.now()}.jpg`;
     const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -98,18 +97,12 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       })
     });
     const commitResult = await commitRes.json();
-    if (commitResult.success === false || !commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
+    if (!commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
 
-    return commitResult.image || {
-      recordId: commitResult.recordId,
-      url: commitResult.url,
-      fileName: commitResult.fileName,
-      fileSize: imageBuffer.length
-    };
+    return commitResult.image || commitResult;
   };
 
   try {
-
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
       const targetUrl = `${SAAS_ORIGIN}${url}`;
@@ -202,24 +195,27 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (Synchronous Mode)
+    // 3. Beautify Image (AI Generation + SaaS Save)
     if (url.includes('/api/beautify')) {
       const startTime = Date.now();
       const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
 
       // 1. Verify points
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const verifyStart = Date.now();
         const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
         });
         const verifyData = await verifyRes.json();
+        console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
         if (!verifyData.success) {
           return res.status(403).json(verifyData);
         }
       }
 
+      const getOrigStart = Date.now();
       let dataToUse = base64Image;
       let mimeToUse = mimeType;
 
@@ -228,8 +224,10 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         const arrayBuffer = await imageRes.arrayBuffer();
         dataToUse = Buffer.from(arrayBuffer).toString('base64');
         mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
+        console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
       }
 
+      const geminiStart = Date.now();
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -245,8 +243,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
       2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
       3. Apply "${options.lighting}" lighting effect.
-      4. RESOLUTION & QUALITY: Generate a high quality image at ${options.resolution} resolution.
-      5. STRICTURE: DO NOT modify any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
+      4. RESOLUTION & QUALITY: Generate a high quality image with clean details and natural realistic result at ${options.resolution} resolution.
+      5. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
       ${additionRules}
       CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
       
@@ -267,6 +265,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       });
 
       const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+      console.log(`[Beautify] Gemini generation took ${Date.now() - geminiStart}ms`);
 
       let generatedImageBase64 = null;
       let generatedMimeType = "image/png";
@@ -282,18 +281,53 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      // Convert generated image to Buffer - NO RESIZING
-      const imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+      const sharpStart = Date.now();
+      // Convert generated image to Buffer and process with Sharp
+      let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+      try {
+        // Optimization: Don't force massive upscale, use standard 4K width
+        const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
+        
+        imageBuffer = await sharp(imageBuffer)
+          .rotate() 
+          .resize({ 
+            width: resizeLimit, 
+            height: resizeLimit, 
+            fit: 'inside', 
+            withoutEnlargement: true // Never force upscale to save time/ram
+          })
+          .jpeg({ 
+            quality: 90, // Balanced quality
+            force: true 
+          })
+          .toBuffer();
+        
+        // Force mime type to jpeg after sharp processing
+        generatedMimeType = "image/jpeg";
+        console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
+      } catch (sharpError) {
+        console.error('Sharp processing failed:', sharpError);
+      }
+
+      const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
       
-      // Save result to SaaS
+      // 2. Save result to SaaS (Must Await)
       let saasImage = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
+        const saasStart = Date.now();
+        try {
+          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
+          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
+        } catch (saveError: any) {
+          console.error('[Beautify] SaaS save failed:', saveError.message);
+          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
+        }
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
+        generatedImage: finalImageBase64,
         image: saasImage
       });
     }

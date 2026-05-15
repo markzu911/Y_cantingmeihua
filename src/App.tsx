@@ -206,16 +206,15 @@ export default function App() {
         originalImage.saasUrl
       );
       
-      const { image: saasImage } = result;
-      if (saasImage?.url) {
-        setBeautifiedImage(saasImage.url);
-        setHistory(prev => [saasImage.url, ...prev]);
-      } else {
-        throw new Error('美化成功但未返回图片链接');
-      }
+      const { generatedImage, image: saasImage } = result;
+      // Immediately show the AI generated image (base64)
+      const finalUrl = saasImage?.url || generatedImage;
+      setBeautifiedImage(finalUrl);
+      setHistory(prev => [finalUrl, ...prev]);
 
       // Refresh integral after generation
       if (userId && toolId) {
+        // Delay point refresh slightly as it happens asynchronously on server
         setTimeout(() => {
           fetch('/api/tool/launch', {
             method: 'POST',
@@ -225,7 +224,7 @@ export default function App() {
             .then(res => {
               if (res.success) setUserInfo(res.data.user);
             }).catch(console.error);
-        }, 1000);
+        }, 3000);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';

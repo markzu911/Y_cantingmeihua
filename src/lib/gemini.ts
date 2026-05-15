@@ -65,7 +65,7 @@ export async function beautifyRestaurantImage(
   userId?: string | null,
   toolId?: string | null,
   imageUrl?: string | null
-): Promise<{ success: boolean; image?: SaasImage }> {
+): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
@@ -88,14 +88,7 @@ export async function beautifyRestaurantImage(
       signal: controller.signal,
     });
 
-    const resultText = await response.text();
-    let result;
-    try {
-      result = JSON.parse(resultText);
-    } catch (e) {
-      console.error("Failed to parse JSON:", resultText);
-      throw new Error(`服务器返回了非 JSON 响应: ${resultText.substring(0, 100)}...`);
-    }
+    const result = await response.json().catch(() => ({ success: false, error: "Network error or timeout" }));
 
     if (!response.ok || result.success === false) {
       throw new Error(result.error || "Failed to beautify image");
