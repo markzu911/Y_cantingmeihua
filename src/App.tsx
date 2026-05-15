@@ -184,7 +184,11 @@ export default function App() {
       // Step 2: Async Save to SaaS (Points deduction & Gallery)
       if (userId && toolId) {
         setIsSavingToSaas(true);
-        handleAsyncSaasSave(generatedImage);
+        // Use timeout to let the browser prioritize painting the image first 
+        // before doing heavy JSON.stringify and fetch for the base64 payload
+        setTimeout(() => {
+          handleAsyncSaasSave(generatedImage);
+        }, 500);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
