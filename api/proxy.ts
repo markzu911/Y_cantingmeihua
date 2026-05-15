@@ -36,23 +36,7 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
 
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
-  const saasOrigin = process.env.SAAS_ORIGIN || 'https://saas.aibigtree.com';
-
-  const readJsonResponse = async (res: any) => {
-    const text = await res.text();
-    let data = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { error: text.slice(0, 300) };
-    }
-
-    if (!res.ok || (data as any).success === false) {
-      throw new Error((data as any).error || (data as any).message || `请求失败: ${res.status}`);
-    }
-
-    return data as any;
-  };
+  const saasOrigin = 'http://aibigtree.com';
 
   // Helper to save result image to SaaS following the standard flow
   const saveResultImageToSaas = async (userId: string, toolId: string, imageBuffer: Buffer, mimeType: string = 'image/png') => {
@@ -60,12 +44,17 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
 
     // 1. Consume points (Confirmed success)
+    const saasOrigin = 'https://saas.aibigtree.com';
     const consumeRes = await fetch(`${saasOrigin}/api/tool/consume`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, toolId })
     });
-    await readJsonResponse(consumeRes);
+    const consumeText = await consumeRes.text();
+    let consume;
+    try { consume = JSON.parse(consumeText); } catch { consume = { success: false, error: consumeText }; }
+    
+    if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
 
     // 2. Direct Token
     const finalFileName = `beautified-${Date.now()}.jpg`;
@@ -81,7 +70,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         fileSize: imageBuffer.length
       })
     });
-    const token = await readJsonResponse(tokenRes);
+    const token = await tokenRes.json();
+    if (!token.success) throw new Error(token.error || '获取上传凭证失败');
 
     // 3. PUT to OSS using token headers
     const uploadRes = await fetch(token.uploadUrl, {
@@ -103,10 +93,11 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         toolId,
         source: 'result',
         objectKey: token.objectKey,
+        fileName: finalFileName,
         fileSize: imageBuffer.length
       })
     });
-    const commitResult = await readJsonResponse(commitRes);
+    const commitResult = await commitRes.json();
     if (!commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
 
     return commitResult.image || commitResult;
@@ -321,23 +312,18 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
       
-      let saasImage = null;
-      // SaaS Save (Blocking for response to include recordId/url)
+      // 2. Async Save result to SaaS (Non-blocking)
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        try {
-          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (err: any) {
-          console.error('[Beautify] SaaS save failed:', err.message);
-        }
+        saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType)
+          .then(() => console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`))
+          .catch(err => console.error('[Beautify] Async SaaS save failed:', err.message));
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64,
-        image: saasImage
+        generatedImage: finalImageBase64
       });
     }
 
