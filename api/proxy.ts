@@ -34,6 +34,27 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
   return await fn(req, res);
 };
 
+const tasks = new Map<string, {
+  status: 'processing' | 'completed' | 'failed';
+  progress: number;
+  message?: string;
+  image?: any;
+  error?: string;
+  createdAt: number;
+}>();
+
+// Cleanup old tasks every hour
+if (typeof setInterval !== 'undefined') {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, task] of tasks.entries()) {
+      if (now - task.createdAt > 3600000) { // 1 hour
+        tasks.delete(id);
+      }
+    }
+  }, 3600000);
+}
+
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
@@ -56,7 +77,8 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
 
     // 2. Direct Token
-    const finalFileName = `beautified-${Date.now()}.jpg`;
+    const extension = mimeType.includes('jpeg') ? 'jpg' : (mimeType.includes('webp') ? 'webp' : 'png');
+    const finalFileName = `result-${Date.now()}.${extension}`;
     const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -103,6 +125,131 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
   };
 
   try {
+    // New Task Endpoints
+    if (url.includes('/api/task-status')) {
+      const { taskId } = req.query;
+      if (!taskId || typeof taskId !== 'string') return res.status(400).json({ success: false, error: "Missing taskId" });
+      const task = tasks.get(taskId);
+      if (!task) return res.status(404).json({ success: false, error: "Task not found" });
+      return res.status(200).json({ success: true, ...task });
+    }
+
+    if (url.includes('/api/beautify-task')) {
+      const taskId = Math.random().toString(36).substring(7);
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+
+      tasks.set(taskId, {
+        status: 'processing',
+        progress: 0,
+        message: '任务已启动',
+        createdAt: Date.now()
+      });
+
+      // Background Worker
+      (async () => {
+        try {
+          const task = tasks.get(taskId)!;
+          
+          // 1. Verify
+          task.progress = 10;
+          task.message = '正在验证点数';
+          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+            const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId, toolId })
+            });
+            const verifyData = await verifyRes.json();
+            if (!verifyData.success) {
+              task.status = 'failed';
+              task.error = verifyData.error || '点数不足';
+              return;
+            }
+          }
+
+          // 2. Prepare Source
+          task.progress = 20;
+          task.message = '正在准备原图';
+          let dataToUse = base64Image;
+          let mimeToUse = mimeType;
+          if (imageUrl && !base64Image) {
+            const imageRes = await fetch(imageUrl);
+            const arrayBuffer = await imageRes.arrayBuffer();
+            dataToUse = Buffer.from(arrayBuffer).toString('base64');
+            mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
+          }
+
+          // 3. AI Generation
+          task.progress = 30;
+          task.message = 'AI 正在生成图片';
+          const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+          const additionsToApply = allowAdditions && analysis.recommendedAdditions
+            ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+            : [];
+          const additionRules = additionsToApply.length > 0
+            ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+            : `CRITICAL: DO NOT add any new objects. Maintain the original layout exactly.`;
+          
+          const prompt = `You are a professional photo restoration expert. Renovation points: ${analysis.beautifyPoints.join(', ')}. Lighting: ${options.lighting}. Image Size: ${options.resolution}. Quality: High. ${additionRules}`;
+          
+          const beautifyPromise = ai.models.generateContent({
+            model: "gemini-3.1-flash-image-preview",
+            contents: {
+              parts: [
+                { inlineData: { data: dataToUse, mimeType: mimeToUse } },
+                { text: prompt },
+              ],
+            },
+            config: {
+              imageConfig: {
+                aspectRatio: options.ratio,
+                imageSize: options.resolution,
+              }
+            }
+          });
+
+          const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+          
+          let generatedImageBase64 = null;
+          let generatedMimeType = "image/png";
+          for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+              generatedImageBase64 = part.inlineData.data;
+              generatedMimeType = part.inlineData.mimeType || "image/png";
+              break;
+            }
+          }
+
+          if (!generatedImageBase64) throw new Error("AI failed to generate image");
+
+          task.progress = 70;
+          task.message = '处理图片数据';
+          const imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+
+          // 4. Save to SaaS
+          task.progress = 80;
+          task.message = '正在保存到云端';
+          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+            const saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
+            task.image = saasImage;
+          }
+
+          task.progress = 100;
+          task.status = 'completed';
+          task.message = '任务成功完成';
+        } catch (err: any) {
+          console.error(`[Task ${taskId}] Error:`, err);
+          const t = tasks.get(taskId);
+          if (t) {
+            t.status = 'failed';
+            t.error = err.message || '内部服务错误';
+          }
+        }
+      })();
+
+      return res.status(200).json({ success: true, taskId });
+    }
+
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
       const targetUrl = `${SAAS_ORIGIN}${url}`;
@@ -195,141 +342,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (AI Generation + SaaS Save)
+    // 3. Beautify Image (Deprecated - Use Task Mode)
     if (url.includes('/api/beautify')) {
-      const startTime = Date.now();
-      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
-
-      // 1. Verify points
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const verifyStart = Date.now();
-        const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        });
-        const verifyData = await verifyRes.json();
-        console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
-        if (!verifyData.success) {
-          return res.status(403).json(verifyData);
-        }
-      }
-
-      const getOrigStart = Date.now();
-      let dataToUse = base64Image;
-      let mimeToUse = mimeType;
-
-      if (imageUrl && !base64Image) {
-        const imageRes = await fetch(imageUrl);
-        const arrayBuffer = await imageRes.arrayBuffer();
-        dataToUse = Buffer.from(arrayBuffer).toString('base64');
-        mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
-        console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
-      }
-
-      const geminiStart = Date.now();
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      
-      const additionsToApply = allowAdditions && analysis.recommendedAdditions
-        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-        : [];
-
-      const additionRules = additionsToApply.length > 0
-        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-        : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
-
-      const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
-      CORE REQUIREMENTS:
-      1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
-      2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
-      3. Apply "${options.lighting}" lighting effect.
-      4. RESOLUTION & QUALITY: Generate a high quality image with clean details and natural realistic result at ${options.resolution} resolution.
-      5. STRICTURE: DO NOT modify, blur, or change any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
-      ${additionRules}
-      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
-      
-      const beautifyPromise = ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            { inlineData: { data: dataToUse, mimeType: mimeToUse } },
-            { text: prompt },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
-          }
-        }
-      });
-
-      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-      console.log(`[Beautify] Gemini generation took ${Date.now() - geminiStart}ms`);
-
-      let generatedImageBase64 = null;
-      let generatedMimeType = "image/png";
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          generatedImageBase64 = part.inlineData.data;
-          generatedMimeType = part.inlineData.mimeType || "image/png";
-          break;
-        }
-      }
-
-      if (!generatedImageBase64) {
-        throw new Error("AI failed to generate image");
-      }
-
-      const sharpStart = Date.now();
-      // Convert generated image to Buffer and process with Sharp
-      let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
-      try {
-        // Optimization: Don't force massive upscale, use standard 4K width
-        const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
-        
-        imageBuffer = await sharp(imageBuffer)
-          .rotate() 
-          .resize({ 
-            width: resizeLimit, 
-            height: resizeLimit, 
-            fit: 'inside', 
-            withoutEnlargement: true // Never force upscale to save time/ram
-          })
-          .jpeg({ 
-            quality: 90, // Balanced quality
-            force: true 
-          })
-          .toBuffer();
-        
-        // Force mime type to jpeg after sharp processing
-        generatedMimeType = "image/jpeg";
-        console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
-      } catch (sharpError) {
-        console.error('Sharp processing failed:', sharpError);
-      }
-
-      const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-      
-      // 2. Save result to SaaS (Must Await)
-      let saasImage = null;
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasStart = Date.now();
-        try {
-          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
-        }
-      }
-
-      console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
-      return res.status(200).json({ 
-        success: true, 
-        generatedImage: finalImageBase64,
-        image: saasImage
-      });
+      return res.status(410).json({ success: false, error: "此接口已停用，请使用 /api/beautify-task" });
     }
 
     // 4. Generic Gemini fallback

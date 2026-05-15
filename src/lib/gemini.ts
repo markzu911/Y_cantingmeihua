@@ -56,6 +56,15 @@ export interface SaasImage {
   fileSize?: number;
 }
 
+export interface BeautifyTaskResult {
+  success: boolean;
+  status: 'processing' | 'completed' | 'failed';
+  progress: number;
+  message?: string;
+  image?: SaasImage;
+  error?: string;
+}
+
 export async function beautifyRestaurantImage(
   base64Image: string | null,
   mimeType: string | null,
@@ -64,17 +73,14 @@ export async function beautifyRestaurantImage(
   allowAdditions: boolean,
   userId?: string | null,
   toolId?: string | null,
-  imageUrl?: string | null
-): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
-
+  imageUrl?: string | null,
+  onProgress?: (progress: number, message: string) => void
+): Promise<{ success: boolean; image?: SaasImage }> {
   try {
-    const response = await fetch("/api/beautify", {
+    // 1. Create Task
+    const startResponse = await fetch("/api/beautify-task", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         base64Image,
         imageUrl,
@@ -85,17 +91,46 @@ export async function beautifyRestaurantImage(
         userId,
         toolId
       }),
-      signal: controller.signal,
     });
 
-    const result = await response.json().catch(() => ({ success: false, error: "Network error or timeout" }));
-
-    if (!response.ok || result.success === false) {
-      throw new Error(result.error || "Failed to beautify image");
+    const startResult = await startResponse.json();
+    if (!startResponse.ok || !startResult.success) {
+      throw new Error(startResult.error || "Failed to start beautify task");
     }
 
-    return result;
-  } finally {
-    clearTimeout(timeoutId);
+    const { taskId } = startResult;
+
+    // 2. Poll for Status
+    let attempts = 0;
+    while (attempts < 100) { // Max 100 attempts (approx 5 mins if 3s delay)
+      attempts++;
+      const statusResponse = await fetch(`/api/task-status?taskId=${taskId}`);
+      const statusResult: BeautifyTaskResult = await statusResponse.json();
+
+      if (!statusResponse.ok || !statusResult.success) {
+        throw new Error(statusResult.error || "Failed to check task status");
+      }
+
+      if (statusResult.status === 'completed') {
+        if (onProgress) onProgress(100, "完成");
+        return { success: true, image: statusResult.image };
+      }
+
+      if (statusResult.status === 'failed') {
+        throw new Error(statusResult.error || "Task failed");
+      }
+
+      if (statusResult.status === 'processing') {
+        if (onProgress) onProgress(statusResult.progress, statusResult.message || "进行中...");
+      }
+
+      // Wait 3 seconds before next poll
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    throw new Error("Task timed out");
+  } catch (error: any) {
+    console.error("Beautify error:", error);
+    throw error;
   }
 }
