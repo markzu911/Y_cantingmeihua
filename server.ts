@@ -18,15 +18,19 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promi
 };
 
 async function readJsonResponse(res: any) {
-  const data = res.data;
-  if (!data || data.success === false) {
+  const text = res.data;
+  let data = typeof text === 'string' ? JSON.parse(text) : text;
+  
+  if (!res.status || res.status < 200 || res.status >= 300 || data.success === false) {
     throw new Error(data?.error || data?.message || `请求失败: ${res.status}`);
   }
   return data;
 }
 
 async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
-  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId });
+  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId }).catch(err => {
+    throw new Error(err.response?.data?.error || err.response?.data?.message || '积分校验请求失败');
+  });
   return readJsonResponse(res);
 }
 
@@ -44,7 +48,9 @@ async function saveResultImageToSaas({
   fileName?: string
 }) {
   // 1. Consume points
-  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
+  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }).catch(err => {
+    throw new Error(err.response?.data?.error || err.response?.data?.message || '扣费请求失败');
+  });
   await readJsonResponse(consumeRes);
 
   // 2. Direct Token
@@ -56,20 +62,20 @@ async function saveResultImageToSaas({
     mimeType,
     fileName: finalFileName,
     fileSize: imageBuffer.byteLength
+  }).catch(err => {
+    throw new Error(err.response?.data?.error || err.response?.data?.message || '获取上传凭证失败');
   });
   const token = await readJsonResponse(tokenRes);
 
   // 3. PUT to OSS using token headers
-  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
+  await axios.put(token.uploadUrl, imageBuffer, {
     headers: { 
       ...(token.headers || {}), 
       'Content-Type': mimeType 
     }
+  }).catch(err => {
+    throw new Error(`OSS 上传失败: ${err.message}`);
   });
-  
-  if (uploadRes.status < 200 || uploadRes.status >= 300) {
-    throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-  }
 
   // 4. Commit
   const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
@@ -77,8 +83,9 @@ async function saveResultImageToSaas({
     toolId,
     source: 'result',
     objectKey: token.objectKey,
-    fileName: finalFileName,
     fileSize: imageBuffer.byteLength
+  }).catch(err => {
+    throw new Error(err.response?.data?.error || err.response?.data?.message || '入库请求失败');
   });
   const commitResult = await readJsonResponse(commitRes);
   if (!commitResult.savedToRecords) {
@@ -356,26 +363,29 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
-      // Async SaaS Save (Non-blocking)
+      let saasImage = null;
+      // SaaS Save (Blocking for response to include recordId/url)
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        saveResultImageToSaas({
-          userId,
-          toolId,
-          imageBuffer,
-          mimeType: generatedMimeType,
-          fileName: `beautified-${Date.now()}.jpg`
-        }).then(() => {
-          console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`);
-        }).catch(err => {
-          console.error('[Beautify] Async SaaS save failed:', err.message);
-        });
+        try {
+          saasImage = await saveResultImageToSaas({
+            userId,
+            toolId,
+            imageBuffer,
+            mimeType: generatedMimeType,
+            fileName: `beautified-${Date.now()}.jpg`
+          });
+          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
+        } catch (err: any) {
+          console.error('[Beautify] SaaS save failed:', err.message);
+        }
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64
+        generatedImage: resultBase64,
+        image: saasImage
       });
     } catch (error: any) {
       console.error(error);
