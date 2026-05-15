@@ -46,7 +46,18 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: base64Image, mimeType: mimeType } },
-          { text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes). Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format." },
+          { text: `Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. 
+CRITICAL RULES for beautification points: 
+1. You MUST generate specific points for Walls (墙面), Floors (地面), and Tables (桌面). 
+2. You CANNOT suggest modifying existing room structure or furniture. You are ONLY allowed to suggest:
+   - Cleaning, brightening, and restoring materials.
+   - Removing garbage cans (垃圾桶), removing people (人物), and removing irrelevant tableware/clutter (无关餐具/杂物).
+   - Adding basic restaurant utility items like tissue boxes (纸巾盒), vinegar/soy sauce bottles (醋瓶酱油瓶).
+3. Do NOT suggest adding any other decorative items in the beautify points. 
+4. Each point MUST be short (under 20 characters). 
+5. Separate from beautify points, recommend 3-5 optional decorative items (e.g., wall art, plants) in 'recommendedAdditions' array. 
+6. Recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. 
+ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON.` },
         ],
         config: {
           responseMimeType: "application/json",
