@@ -213,19 +213,22 @@ export default function App() {
 
       // Handle async save to SaaS via second endpoint
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const saveStart = Date.now();
         fetch('/api/save-result', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId, generatedImage })
         }).then(r => r.json())
           .then(saveRes => {
+            console.log(`[SaveResult] took ${Date.now() - saveStart}ms, success:`, saveRes.success);
             if (saveRes.success) {
               const saasUrl = saveRes.image?.url;
               if (saasUrl) {
+                // Replace the temporary base64 with the permanent SaaS URL
                 setBeautifiedImage(saasUrl);
                 setHistory(prev => [saasUrl, ...prev.filter(img => img !== generatedImage)]);
               }
-              // Refresh integral
+              // Refresh integral from SaaS
               setTimeout(() => {
                 fetch('/api/tool/launch', {
                   method: 'POST',
@@ -237,11 +240,11 @@ export default function App() {
                   }).catch(console.error);
               }, 1000);
             } else {
-              setError(`图片已生成，但保存到“我的图片”失败: ${saveRes.error}`);
+              setError(`图片生成成功，但保存到“我的图片”失败: ${saveRes.error || '接口未返回具体原因'}`);
             }
           }).catch(err => {
-            console.error('[SaveResult] error:', err);
-            setError('图片已生成，但保存到“我的图片”失败');
+            console.error('[SaveResult] network error:', err);
+            setError('图片生成成功，但保存到“我的图片”失败 (网络错误)');
           });
       }
     } catch (err: any) {
