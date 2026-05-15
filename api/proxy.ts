@@ -36,7 +36,7 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
 
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
-  const saasOrigin = 'http://aibigtree.com';
+  const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
 
   // Helper to save result image to SaaS following the standard flow
   const saveResultImageToSaas = async (userId: string, toolId: string, imageBuffer: Buffer, mimeType: string = 'image/png') => {
@@ -44,8 +44,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
 
     // 1. Consume points (Confirmed success)
-    const saasOrigin = 'https://saas.aibigtree.com';
-    const consumeRes = await fetch(`${saasOrigin}/api/tool/consume`, {
+    const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, toolId })
@@ -58,7 +57,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
     // 2. Direct Token
     const finalFileName = `beautified-${Date.now()}.jpg`;
-    const tokenRes = await fetch(`${saasOrigin}/api/upload/direct-token`, {
+    const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -85,7 +84,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     if (!uploadRes.ok) throw new Error(`OSS 上传失败: ${uploadRes.status}`);
 
     // 4. Commit
-    const commitRes = await fetch(`${saasOrigin}/api/upload/commit`, {
+    const commitRes = await fetch(`${SAAS_ORIGIN}/api/upload/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -106,7 +105,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
   try {
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
-      const targetUrl = `${saasOrigin}${url}`;
+      const targetUrl = `${SAAS_ORIGIN}${url}`;
       
       // Filter out invalid ID strings from body
       const body = { ...req.body };
@@ -137,7 +136,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
 
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const verifyRes = await fetch(`${saasOrigin}/api/tool/verify`, {
+        const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -204,7 +203,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       // 1. Verify points
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const verifyStart = Date.now();
-        const verifyRes = await fetch(`${saasOrigin}/api/tool/verify`, {
+        const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, toolId })
@@ -312,18 +311,24 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
       
-      // 2. Async Save result to SaaS (Non-blocking)
+      // 2. Save result to SaaS (Must Await)
+      let saasImage = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType)
-          .then(() => console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`))
-          .catch(err => console.error('[Beautify] Async SaaS save failed:', err.message));
+        try {
+          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
+          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
+        } catch (saveError: any) {
+          console.error('[Beautify] SaaS save failed:', saveError.message);
+          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
+        }
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64
+        generatedImage: finalImageBase64,
+        image: saasImage
       });
     }
 

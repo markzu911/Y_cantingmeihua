@@ -356,26 +356,30 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
-      // Async SaaS Save (Non-blocking)
+      // Save result to SaaS (Must Await)
+      let saasImage = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         const saasStart = Date.now();
-        saveResultImageToSaas({
-          userId,
-          toolId,
-          imageBuffer,
-          mimeType: generatedMimeType,
-          fileName: `beautified-${Date.now()}.jpg`
-        }).then(() => {
-          console.log(`[Beautify] Async SaaS save took ${Date.now() - saasStart}ms`);
-        }).catch(err => {
-          console.error('[Beautify] Async SaaS save failed:', err.message);
-        });
+        try {
+          saasImage = await saveResultImageToSaas({
+            userId,
+            toolId,
+            imageBuffer,
+            mimeType: generatedMimeType,
+            fileName: `beautified-${Date.now()}.jpg`
+          });
+          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
+        } catch (saveError: any) {
+          console.error('[Beautify] SaaS save failed:', saveError.message);
+          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
+        }
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64
+        generatedImage: resultBase64,
+        image: saasImage
       });
     } catch (error: any) {
       console.error(error);
