@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { GoogleGenAI, Type } from "@google/genai";
-import sharp from "sharp";
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; // 延长至 300 秒
@@ -281,58 +280,39 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         throw new Error("AI failed to generate image");
       }
 
-      const sharpStart = Date.now();
-      // Convert generated image to Buffer and process with Sharp
-      let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
-      try {
-        // Optimization: Don't force massive upscale, use standard 4K width
-        const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
-        
-        imageBuffer = await sharp(imageBuffer)
-          .rotate() 
-          .resize({ 
-            width: resizeLimit, 
-            height: resizeLimit, 
-            fit: 'inside', 
-            withoutEnlargement: true // Never force upscale to save time/ram
-          })
-          .jpeg({ 
-            quality: 90, // Balanced quality
-            force: true 
-          })
-          .toBuffer();
-        
-        // Force mime type to jpeg after sharp processing
-        generatedMimeType = "image/jpeg";
-        console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
-      } catch (sharpError) {
-        console.error('Sharp processing failed:', sharpError);
-      }
-
-      const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
+      const finalImageBase64 = `data:${generatedMimeType};base64,${generatedImageBase64}`;
       
-      // 2. Save result to SaaS (Must Await)
-      let saasImage = null;
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasStart = Date.now();
-        try {
-          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
-        }
-      }
-
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64,
-        image: saasImage
+        generatedImage: finalImageBase64
       });
     }
 
-    // 4. Generic Gemini fallback
+    // 4. SaaS Save Result (Async upload after generation)
+    if (url.includes('/api/saas/save-result')) {
+      const { base64Image, userId, toolId, mimeType } = req.body;
+      if (!base64Image || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: "Missing required fields for SaaS save" });
+      }
+      
+      let buffer: Buffer;
+      let finalMime = mimeType || 'image/png';
+      
+      if (base64Image.startsWith('data:')) {
+        const parts = base64Image.split(',');
+        buffer = Buffer.from(parts[1], 'base64');
+        const match = parts[0].match(/data:(.*?);/);
+        if (match) finalMime = match[1];
+      } else {
+        buffer = Buffer.from(base64Image, 'base64');
+      }
+
+      const saasImage = await saveResultImageToSaas(userId, toolId, buffer, finalMime);
+      return res.status(200).json({ success: true, image: saasImage });
+    }
+
+    // 5. Generic Gemini fallback
     if (url.includes('/api/gemini')) {
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const { model, contents, config } = req.body;
