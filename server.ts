@@ -284,6 +284,16 @@ async function startServer() {
   });
 
   app.post("/api/beautify", async (req, res) => {
+    // Send headers immediately and keep connection alive with whitespace
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Nginx will drop connection if no data is sent for 60s. 
+    // We send spaces every 10 seconds to keep the connection alive.
+    // Leading/trailing spaces are safely ignored by JSON.parse() on the client.
+    const heartbeat = setInterval(() => {
+      res.write(' '.repeat(1024));
+    }, 10000);
+
     const totalStart = Date.now();
     try {
       const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
@@ -295,7 +305,9 @@ async function startServer() {
           await verifyBeforeGenerate({ userId, toolId });
           console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
         } catch (error: any) {
-          return res.status(403).json({ success: false, error: error.message });
+          clearInterval(heartbeat);
+          res.write(JSON.stringify({ success: false, error: error.message }));
+          return res.end();
         }
       }
 
@@ -381,13 +393,21 @@ GENERAL CONSTRAINTS:
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
-      return res.json({ 
+      
+      clearInterval(heartbeat);
+      res.write(JSON.stringify({ 
         success: true, 
         generatedImage: `data:${generatedMimeType};base64,${generatedBase64}`
-      });
+      }));
+      res.end();
     } catch (error: any) {
+      clearInterval(heartbeat);
       console.error(error);
-      res.status(500).json({ error: error.message });
+      if (!res.headersSent) {
+        res.status(500);
+      }
+      res.write(JSON.stringify({ success: false, error: error.message }));
+      res.end();
     }
   });
 
