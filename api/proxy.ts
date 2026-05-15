@@ -304,28 +304,34 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
       
-      // 2. Save result to SaaS (Must Await)
-      let saasImage = null;
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasStart = Date.now();
-        try {
-          saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
-        }
-      }
-
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64,
-        image: saasImage
+        generatedImage: finalImageBase64
       });
     }
 
-    // 4. Generic Gemini fallback
+    // 4. Save Result to SaaS (Dedicated Endpoint)
+    if (url.includes('/api/save-result')) {
+      const { generatedImage, userId, toolId } = req.body;
+      if (!generatedImage || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      }
+
+      try {
+        const base64Data = generatedImage.replace(/^data:image\/\w+;base64,/, "");
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        const mimeType = generatedImage.split(';')[0].split(':')[1] || 'image/jpeg';
+        
+        const saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, mimeType);
+        return res.status(200).json({ success: true, image: saasImage });
+      } catch (saveError: any) {
+        console.error('[SaveResult] failed:', saveError.message);
+        return res.status(500).json({ success: false, error: saveError.message || '图片保存失败' });
+      }
+    }
+
+    // 5. Generic Gemini fallback
     if (url.includes('/api/gemini')) {
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const { model, contents, config } = req.body;

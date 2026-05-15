@@ -350,34 +350,40 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
-      // Save result to SaaS (Must Await)
-      let saasImage = null;
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasStart = Date.now();
-        try {
-          saasImage = await saveResultImageToSaas({
-            userId,
-            toolId,
-            imageBuffer,
-            mimeType: generatedMimeType,
-            fileName: `beautified-${Date.now()}.jpg`
-          });
-          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
-        } catch (saveError: any) {
-          console.error('[Beautify] SaaS save failed:', saveError.message);
-          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
-        }
-      }
-
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64,
-        image: saasImage
+        generatedImage: resultBase64
       });
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/save-result", async (req, res) => {
+    try {
+      const { generatedImage, userId, toolId } = req.body;
+      if (!generatedImage || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      }
+
+      const base64Data = generatedImage.replace(/^data:image\/\w+;base64,/, "");
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      const mimeType = generatedImage.match(/^data:([^;]+);/)?.[1] || 'image/jpeg';
+
+      const saasImage = await saveResultImageToSaas({
+        userId,
+        toolId,
+        imageBuffer,
+        mimeType,
+        fileName: `beautified-${Date.now()}.jpg`
+      });
+
+      res.json({ success: true, image: saasImage });
+    } catch (error: any) {
+      console.error('[SaveResult] failed:', error.message);
+      res.status(500).json({ success: false, error: error.message || '图片保存失败' });
     }
   });
 

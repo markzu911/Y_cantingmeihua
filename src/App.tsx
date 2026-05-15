@@ -206,25 +206,43 @@ export default function App() {
         originalImage.saasUrl
       );
       
-      const { generatedImage, image: saasImage } = result;
+      const { generatedImage } = result;
       // Immediately show the AI generated image (base64)
-      const finalUrl = saasImage?.url || generatedImage;
-      setBeautifiedImage(finalUrl);
-      setHistory(prev => [finalUrl, ...prev]);
+      setBeautifiedImage(generatedImage);
+      setHistory(prev => [generatedImage, ...prev]);
 
-      // Refresh integral after generation
-      if (userId && toolId) {
-        // Delay point refresh slightly as it happens asynchronously on server
-        setTimeout(() => {
-          fetch('/api/tool/launch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId })
-          }).then(r => r.json())
-            .then(res => {
-              if (res.success) setUserInfo(res.data.user);
-            }).catch(console.error);
-        }, 3000);
+      // Handle async save to SaaS via second endpoint
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        fetch('/api/save-result', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId, generatedImage })
+        }).then(r => r.json())
+          .then(saveRes => {
+            if (saveRes.success) {
+              const saasUrl = saveRes.image?.url;
+              if (saasUrl) {
+                setBeautifiedImage(saasUrl);
+                setHistory(prev => [saasUrl, ...prev.filter(img => img !== generatedImage)]);
+              }
+              // Refresh integral
+              setTimeout(() => {
+                fetch('/api/tool/launch', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ userId, toolId })
+                }).then(r => r.json())
+                  .then(res => {
+                    if (res.success) setUserInfo(res.data.user);
+                  }).catch(console.error);
+              }, 1000);
+            } else {
+              setError(`图片已生成，但保存到“我的图片”失败: ${saveRes.error}`);
+            }
+          }).catch(err => {
+            console.error('[SaveResult] error:', err);
+            setError('图片已生成，但保存到“我的图片”失败');
+          });
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
