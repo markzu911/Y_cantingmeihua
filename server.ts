@@ -38,89 +38,70 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promi
 async function readJsonResponse(res: any) {
   const data = res.data;
   if (!data || data.success === false) {
-    throw new Error(data?.error || data?.message || `请求失败: ${res.status}`);
+    const errorMsg = data?.error || data?.message || `请求失败: ${res.status}`;
+    console.error(`[SaaS API Error]`, errorMsg);
+    throw new Error(errorMsg);
   }
   return data;
 }
 
-async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
-  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId });
-  return readJsonResponse(res);
+// Unified SaaS API call helper
+async function saasPost(path: string, body: any) {
+  try {
+    const res = await axios.post(`${SAAS_ORIGIN}${path}`, body);
+    return await readJsonResponse(res);
+  } catch (error: any) {
+    const msg = error.response?.data?.error || error.response?.data?.message || error.message;
+    console.error(`[SaaS POST Failed] ${path}:`, msg);
+    throw new Error(msg);
+  }
 }
 
-async function uploadToOssOnly({
-  userId,
-  toolId,
-  imageBuffer,
-  mimeType = 'image/png',
-  fileName
-}: {
-  userId: string,
-  toolId: string,
-  imageBuffer: Buffer,
-  mimeType?: string,
-  fileName?: string
-}) {
-  // 1. Direct Token
-  const finalFileName = fileName || `beautified-${Date.now()}.jpg`;
-  const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-    userId,
-    toolId,
-    source: 'result',
-    mimeType,
-    fileName: finalFileName,
-    fileSize: imageBuffer.byteLength
-  });
-  const token = await readJsonResponse(tokenRes);
+async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
+  return saasPost('/api/tool/verify', { userId, toolId });
+}
 
-  // 2. PUT to OSS
-  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
-    headers: { 
-      ...(token.headers || {}), 
-      'Content-Type': mimeType 
-    }
+async function saveResultToSaas(userId: string, toolId: string, imageBuffer: Buffer, mimeType: string) {
+  // 1. Consume points
+  await saasPost('/api/tool/consume', { userId, toolId });
+
+  // 2. Direct Token
+  const fileName = `beautified-${Date.now()}.jpg`;
+  const token = await saasPost('/api/upload/direct-token', {
+    userId, toolId, source: 'result', mimeType, fileName, fileSize: imageBuffer.byteLength
   });
-  
-  if (uploadRes.status < 200 || uploadRes.status >= 300) {
+
+  // 3. PUT to OSS (Using fetch for strict header handling as per spec)
+  const headers: Record<string, string> = { ...(token.headers || {}) };
+  if (!headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = mimeType;
+  }
+
+  const uploadRes = await fetch(token.uploadUrl, {
+    method: token.method || 'PUT',
+    headers: headers,
+    body: imageBuffer
+  });
+
+  if (!uploadRes.ok) {
     throw new Error(`OSS 上传失败: ${uploadRes.status}`);
   }
 
-  return {
-    objectKey: token.objectKey,
-    fileSize: imageBuffer.byteLength,
-    mimeType,
-    fileName: finalFileName
-  };
-}
-
-async function commitSaasResult({
-  userId,
-  toolId,
-  pendingUpload
-}: {
-  userId: string,
-  toolId: string,
-  pendingUpload: any
-}) {
-  // 1. Consume points
-  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
-  await readJsonResponse(consumeRes);
-
-  // 2. Commit
-  const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
-    userId,
-    toolId,
-    source: 'result',
-    objectKey: pendingUpload.objectKey,
-    fileName: pendingUpload.fileName,
-    fileSize: pendingUpload.fileSize
+  // 4. Commit
+  const commit = await saasPost('/api/upload/commit', {
+    userId, toolId, source: 'result', objectKey: token.objectKey, fileSize: imageBuffer.byteLength
   });
-  const commitResult = await readJsonResponse(commitRes);
-  if (!commitResult.savedToRecords) {
-    throw new Error(commitResult.error || '图片入库失败');
+
+  if (!commit.savedToRecords) {
+    throw new Error(commit.error || '图片入库失败');
   }
 
-  return commitResult.image || commitResult;
+  return commit.image || {
+    recordId: commit.recordId,
+    url: commit.url,
+    fileName: commit.fileName,
+    fileSize: imageBuffer.byteLength
+  };
 }
 
 function getGeminiApiKey() {
@@ -248,40 +229,12 @@ async function startServer() {
 
       // 4. Save to SaaS (Strict Order: Consume -> Token -> PUT -> Commit)
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const fileName = `beautified-${Date.now()}.jpg`;
-        
-        // A. Consume points
-        const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
-        await readJsonResponse(consumeRes);
-
-        // B. Get token
-        const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-          userId, toolId, source: 'result', mimeType: generatedMimeType, fileName, fileSize: resultBuffer.byteLength
-        });
-        const token = await readJsonResponse(tokenRes);
-
-        // C. PUT to OSS
-        await axios.put(token.uploadUrl, resultBuffer, {
-          headers: { ...(token.headers || {}), 'Content-Type': generatedMimeType }
-        });
-
-        // D. Commit
-        const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
-          userId, toolId, source: 'result', objectKey: token.objectKey, fileName, fileSize: resultBuffer.byteLength
-        });
-        const commit = await readJsonResponse(commitRes);
-
-        if (!commit.savedToRecords) throw new Error('图片保存入库失败');
+        const saasImage = await saveResultToSaas(userId, toolId, resultBuffer, generatedMimeType);
 
         tasks.set(taskId, { 
           status: 'completed', 
           progress: 100, 
-          result: {
-            url: commit.image?.url || commit.url,
-            fileName: commit.image?.fileName || fileName,
-            fileSize: resultBuffer.byteLength,
-            recordId: commit.image?.recordId || commit.recordId
-          }
+          result: saasImage
         });
       } else {
         // No SaaS user, just finish with base64 for preview (though user said don't return big base64, but without SaaS we have no URL)
