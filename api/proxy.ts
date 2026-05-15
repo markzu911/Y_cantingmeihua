@@ -285,26 +285,19 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       // Convert generated image to Buffer and process with Sharp
       let imageBuffer = Buffer.from(generatedImageBase64, 'base64');
       try {
-        // Optimization: Don't force massive upscale, use standard 4K width
-        const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
-        
+        // 恢复最高质量处理：不压缩体积，不缩小尺寸
         imageBuffer = await sharp(imageBuffer)
           .rotate() 
-          .resize({ 
-            width: resizeLimit, 
-            height: resizeLimit, 
-            fit: 'inside', 
-            withoutEnlargement: true // Never force upscale to save time/ram
-          })
           .jpeg({ 
-            quality: 90, // Balanced quality
+            quality: 100, 
+            chromaSubsampling: '4:4:4',
             force: true 
           })
           .toBuffer();
         
         // Force mime type to jpeg after sharp processing
         generatedMimeType = "image/jpeg";
-        console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
+        console.log(`[Beautify] Sharp processing (HQ) took ${Date.now() - sharpStart}ms`);
       } catch (sharpError) {
         console.error('Sharp processing failed:', sharpError);
       }
