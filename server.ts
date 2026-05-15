@@ -7,100 +7,6 @@ import axios from "axios";
 
 dotenv.config({ override: true });
 
-const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
-
-const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
-  ]) as Promise<T>;
-};
-
-async function readJsonResponse(res: any) {
-  const data = res.data;
-  if (!data || data.success === false) {
-    throw new Error(data?.error || data?.message || `请求失败: ${res.status}`);
-  }
-  return data;
-}
-
-async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
-  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId });
-  return readJsonResponse(res);
-}
-
-async function saveImageToSaas({
-  userId,
-  toolId,
-  imageBuffer,
-  mimeType = 'image/png',
-  fileName
-}: {
-  userId: string,
-  toolId: string,
-  imageBuffer: Buffer,
-  mimeType?: string,
-  fileName?: string
-}) {
-  const saasTimeout = 120000; // 120 seconds
-  const finalFileName = fileName || `result-${Date.now()}.png`;
-
-  console.log(`[SaaS Upload] Starting result upload, size: ${imageBuffer.byteLength} bytes`);
-
-  // 1. & 2. Parallellize Point Consumption and Direct Token request
-  const consumeTask = axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { timeout: saasTimeout });
-  const tokenTask = axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-    userId,
-    toolId,
-    source: 'result',
-    mimeType,
-    fileName: finalFileName,
-    fileSize: imageBuffer.byteLength
-  }, { timeout: saasTimeout });
-
-  const [consumeRes, tokenRes] = await Promise.all([consumeTask, tokenTask]);
-  
-  await readJsonResponse(consumeRes);
-  const token = await readJsonResponse(tokenRes);
-
-  console.log(`[SaaS Upload] Got token, uploading to OSS...`);
-
-  // 3. PUT to OSS using token headers
-  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
-    headers: { 
-      ...(token.headers || {}), 
-      'Content-Type': mimeType 
-    },
-    timeout: saasTimeout,
-    maxContentLength: Infinity,
-    maxBodyLength: Infinity
-  });
-  
-  if (uploadRes.status < 200 || uploadRes.status >= 300) {
-    throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-  }
-
-  console.log(`[SaaS Upload] OSS upload success, committing...`);
-
-  // 4. Commit
-  const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
-    userId,
-    toolId,
-    source: 'result',
-    objectKey: token.objectKey,
-    fileName: finalFileName,
-    fileSize: imageBuffer.byteLength
-  }, { timeout: saasTimeout });
-  const commitResult = await readJsonResponse(commitRes);
-  console.log(`[SaaS Upload] Commit success`);
-
-  if (!commitResult.savedToRecords) {
-    throw new Error(commitResult.error || '图片入库失败');
-  }
-
-  return commitResult.image || commitResult;
-}
-
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
   if (!key || key.trim() === "") {
@@ -121,12 +27,12 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images to 50mb
-  app.use(express.json({ limit: '50mb' }));
+  // Increase the payload size limit for base64 images to 20mb as per client expectation
+  app.use(express.json({ limit: '20mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `${SAAS_ORIGIN}${targetPath}`;
+    const targetUrl = `http://aibigtree.com${targetPath}`;
     try {
       const response = await axios({
         method: req.method,
@@ -136,11 +42,7 @@ async function startServer() {
       });
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      console.error(`Proxy error (silenced) for ${targetPath}:`, error.message);
-      // For upload paths, don't return 500 if user doesn't want errors for uploads
-      if (targetPath.includes('/api/upload/')) {
-        return res.status(200).json({ success: false, silenced: true });
-      }
+      console.error(`Proxy error for ${targetPath}:`, error.message);
       res.status(500).json({ success: false, error: "代理转发失败" });
     }
   };
@@ -148,75 +50,19 @@ async function startServer() {
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
-  app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
-  app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
-
-  app.post("/api/saas/save-result", async (req, res) => {
-    try {
-      const { base64Image, userId, toolId, mimeType } = req.body;
-      if (!base64Image || !userId || !toolId) {
-        return res.status(400).json({ success: false, error: "Missing required fields for SaaS save" });
-      }
-
-      // Convert data URL to buffer if needed
-      let buffer: Buffer;
-      let finalMime = mimeType || 'image/png';
-      
-      if (base64Image.startsWith('data:')) {
-        const parts = base64Image.split(',');
-        buffer = Buffer.from(parts[1], 'base64');
-        const match = parts[0].match(/data:(.*?);/);
-        if (match) finalMime = match[1];
-      } else {
-        buffer = Buffer.from(base64Image, 'base64');
-      }
-
-      const saasImage = await saveImageToSaas({
-        userId,
-        toolId,
-        imageBuffer: buffer,
-        mimeType: finalMime,
-        fileName: `beautified-${Date.now()}.png`
-      });
-
-      res.status(200).json({ success: true, image: saasImage });
-    } catch (error: any) {
-      console.error("[SaaS Save Result] Failed:", error.message);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
 
   // API routes
   app.post("/api/analyze", async (req, res) => {
     try {
-      const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
-
-      // Verify points if SaaS info is provided
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        try {
-          await verifyBeforeGenerate({ userId, toolId });
-        } catch (error: any) {
-          return res.status(403).json({ success: false, error: error.message });
-        }
-      }
-
-      let dataToUse = base64Image;
-      let mimeToUse = mimeType;
-
-      if (imageUrl && !base64Image) {
-        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-        dataToUse = Buffer.from(fetchRes.data).toString('base64');
-        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
-      }
-
+      const { base64Image, mimeType } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const analysisPromise = ai.models.generateContent({
+      const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
           {
             inlineData: {
-              data: dataToUse,
-              mimeType: mimeToUse,
+              data: base64Image,
+              mimeType: mimeType,
             },
           },
           {
@@ -269,7 +115,6 @@ async function startServer() {
         },
       });
 
-      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -283,58 +128,21 @@ async function startServer() {
     }
   });
 
-  // Setup polling for long running requests
-  const beautifyJobs = new Map<string, any>();
+  app.post("/api/beautify", async (req, res) => {
+    try {
+      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      
+      const additionsToApply = allowAdditions && analysis.recommendedAdditions
+        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+        : [];
 
-  app.post("/api/beautify/start", async (req, res) => {
-    const jobId = Math.random().toString(36).substring(2, 15);
-    beautifyJobs.set(jobId, { status: "processing", startedAt: Date.now() });
-    
-    // Return immediately to avoid 504 Gateway Timeout
-    res.json({ success: true, jobId });
+      const additionRules = additionsToApply.length > 0
+        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-    // Execute heavy task in the background
-    (async () => {
-      const totalStart = Date.now();
-      try {
-        const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
-        
-        // Step 2: Verify points if SaaS info is provided
-        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-          const verifyStart = Date.now();
-          try {
-            await verifyBeforeGenerate({ userId, toolId });
-            console.log(`[Beautify Job ${jobId}] Verify points took ${Date.now() - verifyStart}ms`);
-          } catch (error: any) {
-            beautifyJobs.set(jobId, { status: "failed", error: error.message });
-            return;
-          }
-        }
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
 
-        const getOrigStart = Date.now();
-        let dataToUse = base64Image;
-        let mimeToUse = mimeType;
-
-        if (imageUrl && !base64Image) {
-          const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-          dataToUse = Buffer.from(fetchRes.data).toString('base64');
-          mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
-          console.log(`[Beautify Job ${jobId}] Fetch original image took ${Date.now() - getOrigStart}ms`);
-        }
-
-        const geminiStart = Date.now();
-        const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-        
-        const additionsToApply = allowAdditions && analysis.recommendedAdditions
-          ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-          : [];
-
-        const additionRules = additionsToApply.length > 0
-          ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-          : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
-
-        const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-        
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
 ${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
@@ -343,7 +151,6 @@ MANDATORY BASELINE (ALWAYS APPLY):
 - FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
 - TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
 - ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
-- RESOLUTION & QUALITY: Generate a high quality image with clean details and natural realistic result at ${options.resolution} resolution.
 
 ${additionRules}
 
@@ -352,71 +159,45 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-        const beautifyPromise = ai.models.generateContent({
-          model: "gemini-3.1-flash-image-preview",
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  data: dataToUse,
-                  mimeType: mimeToUse,
-                },
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: base64Image,
+                mimeType: mimeType,
               },
-              {
-                text: prompt,
-              },
-            ],
-          },
-          config: {
-            imageConfig: {
-              aspectRatio: options.ratio,
-              imageSize: options.resolution,
-            }
-          }
-        });
-
-        const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-        console.log(`[Beautify Job ${jobId}] Gemini generation took ${Date.now() - geminiStart}ms`);
-
-        let generatedBase64 = null;
-        let generatedMimeType = "image/png";
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            generatedBase64 = part.inlineData.data;
-            generatedMimeType = part.inlineData.mimeType || "image/png";
-            break;
+            },
+            {
+              text: prompt,
+            },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
           }
         }
+      });
 
-        if (!generatedBase64) {
-          throw new Error("No image generated by AI");
+      let generatedImage = null;
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+          break;
         }
-
-        console.log(`[Beautify Job ${jobId}] Total processing time: ${Date.now() - totalStart}ms`);
-        beautifyJobs.set(jobId, { 
-          status: "completed", 
-          generatedImage: `data:${generatedMimeType};base64,${generatedBase64}` 
-        });
-
-      } catch (error: any) {
-        console.error(`[Beautify Job ${jobId}] Error:`, error);
-        beautifyJobs.set(jobId, { status: "failed", error: error.message });
       }
-    })();
-  });
 
-  app.get("/api/beautify/status/:jobId", (req, res) => {
-    const job = beautifyJobs.get(req.params.jobId);
-    if (!job) {
-      return res.status(404).json({ success: false, error: "Job not found" });
-    }
-    
-    // Clean up if completed or failed so it doesn't leak memory
-    if (job.status === "completed" || job.status === "failed") {
-      res.json({ success: true, ...job });
-      beautifyJobs.delete(req.params.jobId);
-    } else {
-      res.json({ success: true, ...job });
+      if (!generatedImage) {
+        throw new Error("No image generated by AI");
+      }
+
+      res.json({ generatedImage });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
     }
   });
 
