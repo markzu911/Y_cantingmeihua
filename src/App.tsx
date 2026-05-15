@@ -29,6 +29,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSassUploading, setIsSassUploading] = useState(false);
   
   const [activeTab, setActiveTab] = useState<'analysis' | 'decor' | 'settings'>('analysis');
   const [options, setOptions] = useState({
@@ -144,14 +145,33 @@ export default function App() {
 
         const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
         const base64 = compressedDataUrl.split(',')[1];
+        const mimeType = 'image/jpeg';
         
         // Immediately set original image for preview
         setOriginalImage({
           base64,
-          mimeType: 'image/jpeg',
+          mimeType,
           url: compressedDataUrl
         });
         
+        // Trigger SaaS pre-upload if we have user info
+        if (userId && toolId) {
+          setIsSassUploading(true);
+          fetch('/api/upload-source', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base64Image: base64, mimeType, userId, toolId })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success && data.image?.url) {
+              setOriginalImage(prev => prev ? { ...prev, saasUrl: data.image.url } : null);
+            }
+          })
+          .catch(err => console.error('SaaS pre-upload failed:', err))
+          .finally(() => setIsSassUploading(false));
+        }
+
         setAnalysisResult(null);
         setBeautifiedImage(null);
         setHistory([]);
@@ -365,6 +385,14 @@ export default function App() {
                 <div className="space-y-4 sm:space-y-6">
                   <div className="relative rounded-2xl sm:rounded-[2rem] overflow-hidden border border-[#EAE3DC] bg-[#F9F8F6] aspect-video flex items-center justify-center shadow-inner group">
                     <img src={originalImage.url} alt="Original" className="max-w-full max-h-full object-contain" />
+                    {isSassUploading && (
+                      <div className="absolute inset-0 bg-white/40 backdrop-blur-[2px] flex items-center justify-center">
+                        <div className="bg-white/80 p-3 rounded-xl shadow-lg flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin text-[#8DA399]" />
+                          <span className="text-xs font-bold text-[#6B6661]">正在同步至云端...</span>
+                        </div>
+                      </div>
+                    )}
                     <button 
                       onClick={() => setOriginalImage(null)}
                       className="absolute top-2 sm:top-4 right-2 sm:right-4 bg-white/80 backdrop-blur-md text-[#3D3935] px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl sm:rounded-2xl text-[10px] sm:text-sm font-semibold hover:bg-white shadow-lg border border-white/50 transition-all sm:opacity-0 group-hover:opacity-100 transform sm:translate-y-2 group-hover:translate-y-0"
@@ -376,7 +404,7 @@ export default function App() {
                   {!analysisResult && (
                     <button
                       onClick={handleAnalyze}
-                      disabled={isAnalyzing || isUploading}
+                      disabled={isAnalyzing || isUploading || isSassUploading}
                       className="w-full py-3.5 sm:py-4.5 px-4 sm:px-6 btn-primary rounded-xl sm:rounded-[1.25rem] font-semibold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-black/5 hover:shadow-black/10 active:scale-[0.99]"
                     >
                       {isAnalyzing ? (
