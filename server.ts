@@ -201,6 +201,77 @@ GENERAL CONSTRAINTS:
     }
   });
 
+  app.post("/api/upload", async (req, res) => {
+    try {
+      const { userId, toolId, base64Image, mimeType = "image/png", fileName = "result.png" } = req.body;
+      
+      if (!userId || !toolId || !base64Image) {
+        return res.status(400).json({ success: false, error: 'Missing required parameters' });
+      }
+
+      const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
+
+      // 1. Consume
+      const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { validateStatus: () => true });
+      if (!consumeRes.data.success) {
+        throw new Error(consumeRes.data.message || consumeRes.data.error || '积分扣除失败');
+      }
+
+      // 2. Get direct token
+      const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+        userId,
+        toolId,
+        source: 'result',
+        mimeType,
+        fileName,
+        fileSize: imageBuffer.byteLength
+      }, { validateStatus: () => true });
+      const token = tokenRes.data;
+      if (!token.success) throw new Error(token.error || token.message || '获取上传凭证失败');
+
+      // 3. Upload to OSS
+      const uploadRes = await fetch(token.uploadUrl, {
+        method: token.method || 'PUT',
+        headers: token.headers,
+        body: imageBuffer
+      });
+      if (!uploadRes.ok) {
+        throw new Error(`OSS 上传失败: ${uploadRes.status}`);
+      }
+
+      // 4. Commit
+      const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
+        userId,
+        toolId,
+        source: 'result',
+        objectKey: token.objectKey,
+        fileSize: imageBuffer.byteLength
+      }, { validateStatus: () => true });
+      const commit = commitRes.data;
+      if (!commit.savedToRecords) {
+        throw new Error(commit.error || commit.message || '图片入库失败');
+      }
+
+      // Return the recommended format
+      res.json({
+        success: true,
+        images: [
+          commit.image || {
+            recordId: commit.recordId,
+            url: commit.url,
+            fileName: commit.fileName,
+            fileSize: imageBuffer.byteLength
+          }
+        ]
+      });
+    } catch (error: any) {
+      console.error('Upload Error:', error);
+      res.status(500).json({ success: false, error: error.message || '保存失败' });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
