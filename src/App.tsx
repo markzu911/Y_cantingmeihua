@@ -25,7 +25,7 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ file: File; mimeType: string; url: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   
@@ -108,59 +108,18 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      
-      // Client-side image compression
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        const maxSide = 1600;
-
-        // Calculate scaling
-        if (width > height) {
-          if (width > maxSide) {
-            height *= maxSide / width;
-            width = maxSide;
-          }
-        } else {
-          if (height > maxSide) {
-            width *= maxSide / height;
-            height = maxSide;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          // Fill with white background for transparency conversion
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-        }
-
-        // Convert to highly compressed JPEG
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        const base64 = compressedDataUrl.split(',')[1];
-        
-        setOriginalImage({
-          base64,
-          mimeType: 'image/jpeg',
-          url: compressedDataUrl
-        });
-        setAnalysisResult(null);
-        setBeautifiedImage(null);
-        setHistory([]);
-        setError(null);
-        setActiveTab('analysis');
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
+    const previewUrl = URL.createObjectURL(file);
+    
+    setOriginalImage({
+      file,
+      mimeType: file.type,
+      url: previewUrl
+    });
+    setAnalysisResult(null);
+    setBeautifiedImage(null);
+    setHistory([]);
+    setError(null);
+    setActiveTab('analysis');
   };
 
   const handleAnalyze = async () => {
@@ -189,7 +148,7 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     try {
-      const result = await analyzeRestaurantImage(originalImage.base64, originalImage.mimeType);
+      const result = await analyzeRestaurantImage(originalImage.file);
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
@@ -207,8 +166,7 @@ export default function App() {
     setError(null);
     try {
       const resultImage = await beautifyRestaurantImage(
-        originalImage.base64,
-        originalImage.mimeType,
+        originalImage.file,
         analysisResult,
         options,
         allowAdditions
@@ -216,7 +174,7 @@ export default function App() {
       setBeautifiedImage(resultImage);
       setHistory(prev => [resultImage, ...prev]);
 
-      // Consume Phase
+      // Consume Phase & Upload to OSS natively
       if (userId && toolId) {
         try {
           const consumeRes = await fetch('/api/tool/consume', {
@@ -227,9 +185,60 @@ export default function App() {
           const consumeData = await consumeRes.json();
           if (consumeData.success) {
             setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+          } else {
+             throw new Error(consumeData.message || '扣费失败');
           }
-        } catch (err) {
-          console.error('Consume failed:', err);
+
+          // Direct token & OSS upload
+          // Convert base64 data url to Blob
+          const res = await fetch(resultImage);
+          const blob = await res.blob();
+          
+          const tokenRes = await fetch('/api/upload/direct-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              toolId,
+              source: 'result',
+              mimeType: blob.type,
+              fileName: 'beautified.png',
+              fileSize: blob.size
+            })
+          });
+          const tokenData = await tokenRes.json();
+          if (!tokenData.success) throw new Error(tokenData.message || '获取上传凭证失败');
+
+          const uploadRes = await fetch(tokenData.uploadUrl, {
+            method: tokenData.method || 'PUT',
+            headers: tokenData.headers,
+            body: blob
+          });
+
+          if (!uploadRes.ok) throw new Error('上传 OSS 失败');
+
+          const commitRes = await fetch('/api/upload/commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              toolId,
+              source: 'result',
+              objectKey: tokenData.objectKey,
+              fileSize: blob.size
+            })
+          });
+          const commitData = await commitRes.json();
+          if (!commitData.savedToRecords) throw new Error(commitData.error || '图片入库失败');
+          
+          if (commitData.image && commitData.image.url) {
+             setBeautifiedImage(commitData.image.url);
+             setHistory(prev => prev.map(img => img === resultImage ? commitData.image.url : img));
+          }
+
+        } catch (err: any) {
+          console.error('Save failed:', err);
+          setError(err.message ? `图片已生成，但保存到图库失败: ${err.message}` : '图片已生成，但保存到图库失败');
         }
       }
     } catch (err: any) {

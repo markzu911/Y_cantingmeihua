@@ -9,13 +9,14 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
-export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
+export async function analyzeRestaurantImage(file: File): Promise<AnalysisResult> {
+  const formData = new FormData();
+  formData.append("image", file);
+  formData.append("mimeType", file.type);
+
   const response = await fetch("/api/analyze", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ base64Image, mimeType }),
+    body: formData,
   });
 
   if (!response.ok) {
@@ -36,24 +37,21 @@ export async function analyzeRestaurantImage(base64Image: string, mimeType: stri
 }
 
 export async function beautifyRestaurantImage(
-  base64Image: string,
-  mimeType: string,
+  file: File,
   analysis: AnalysisResult,
   options: { ratio: string; lighting: string; resolution: string },
   allowAdditions: boolean
 ): Promise<string> {
+  const formData = new FormData();
+  formData.append("image", file);
+  formData.append("mimeType", file.type);
+  formData.append("analysis", JSON.stringify(analysis));
+  formData.append("options", JSON.stringify(options));
+  formData.append("allowAdditions", String(allowAdditions));
+
   const response = await fetch("/api/beautify", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      base64Image,
-      mimeType,
-      analysis,
-      options,
-      allowAdditions,
-    }),
+    body: formData,
   });
 
   if (!response.ok) {

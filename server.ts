@@ -50,11 +50,24 @@ async function startServer() {
   app.post("/api/tool/launch", (req, res) => proxyRequest(req, res, "/api/tool/launch"));
   app.post("/api/tool/verify", (req, res) => proxyRequest(req, res, "/api/tool/verify"));
   app.post("/api/tool/consume", (req, res) => proxyRequest(req, res, "/api/tool/consume"));
+  app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
+  app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
   // API routes
-  app.post("/api/analyze", async (req, res) => {
+  const multer = (await import('multer')).default;
+  const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 30 * 1024 * 1024 } // 30MB limit
+  });
+
+  app.post("/api/analyze", upload.single("image"), async (req, res) => {
     try {
-      const { base64Image, mimeType } = req.body;
+      if (!req.file) {
+        return res.status(400).json({ error: "Missing image file" });
+      }
+      const mimeType = req.file.mimetype || req.body.mimeType;
+      const base64Image = req.file.buffer.toString("base64");
+      
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
@@ -128,9 +141,18 @@ async function startServer() {
     }
   });
 
-  app.post("/api/beautify", async (req, res) => {
+  app.post("/api/beautify", upload.single("image"), async (req, res) => {
     try {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      if (!req.file) {
+        return res.status(400).json({ error: "Missing image file" });
+      }
+      const mimeType = req.file.mimetype || req.body.mimeType;
+      const base64Image = req.file.buffer.toString("base64");
+      
+      const analysis = JSON.parse(req.body.analysis || "{}");
+      const options = JSON.parse(req.body.options || "{}");
+      const allowAdditions = req.body.allowAdditions === "true";
+      
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -145,7 +167,7 @@ async function startServer() {
 
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
-${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
+${analysis.beautifyPoints?.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
 
 MANDATORY BASELINE (ALWAYS APPLY):
 - FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
@@ -176,8 +198,8 @@ GENERAL CONSTRAINTS:
         },
         config: {
           imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
+            aspectRatio: options.ratio || "1:1",
+            imageSize: options.resolution || "1K",
           }
         }
       });
