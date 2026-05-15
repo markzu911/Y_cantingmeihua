@@ -4,8 +4,103 @@ import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import axios from "axios";
+import sharp from "sharp";
 
 dotenv.config({ override: true });
+
+const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+  ]) as Promise<T>;
+};
+
+async function readJsonResponse(res: any) {
+  const data = res.data;
+  if (!data || data.success === false) {
+    throw new Error(data?.error || data?.message || `请求失败: ${res.status}`);
+  }
+  return data;
+}
+
+async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
+  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId });
+  return readJsonResponse(res);
+}
+
+async function saveImageToSaas({
+  userId,
+  toolId,
+  imageBuffer,
+  mimeType = 'image/png',
+  fileName
+}: {
+  userId: string,
+  toolId: string,
+  imageBuffer: Buffer,
+  mimeType?: string,
+  fileName?: string
+}) {
+  const saasTimeout = 120000; // 120 seconds
+  const finalFileName = fileName || `result-${Date.now()}.png`;
+
+  console.log(`[SaaS Upload] Starting result upload, size: ${imageBuffer.byteLength} bytes`);
+
+  // 1. & 2. Parallellize Point Consumption and Direct Token request
+  const consumeTask = axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { timeout: saasTimeout });
+  const tokenTask = axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+    userId,
+    toolId,
+    source: 'result',
+    mimeType,
+    fileName: finalFileName,
+    fileSize: imageBuffer.byteLength
+  }, { timeout: saasTimeout });
+
+  const [consumeRes, tokenRes] = await Promise.all([consumeTask, tokenTask]);
+  
+  await readJsonResponse(consumeRes);
+  const token = await readJsonResponse(tokenRes);
+
+  console.log(`[SaaS Upload] Got token, uploading to OSS...`);
+
+  // 3. PUT to OSS using token headers
+  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
+    headers: { 
+      ...(token.headers || {}), 
+      'Content-Type': mimeType 
+    },
+    timeout: saasTimeout,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity
+  });
+  
+  if (uploadRes.status < 200 || uploadRes.status >= 300) {
+    throw new Error(`OSS 上传失败: ${uploadRes.status}`);
+  }
+
+  console.log(`[SaaS Upload] OSS upload success, committing...`);
+
+  // 4. Commit
+  const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
+    userId,
+    toolId,
+    source: 'result',
+    objectKey: token.objectKey,
+    fileName: finalFileName,
+    fileSize: imageBuffer.byteLength
+  }, { timeout: saasTimeout });
+  const commitResult = await readJsonResponse(commitRes);
+  console.log(`[SaaS Upload] Commit success`);
+
+  if (!commitResult.savedToRecords) {
+    throw new Error(commitResult.error || '图片入库失败');
+  }
+
+  return commitResult.image || commitResult;
+}
 
 function getGeminiApiKey() {
   const key = process.env.GEMINI_API_KEY;
@@ -27,12 +122,12 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images to 20mb as per client expectation
-  app.use(express.json({ limit: '20mb' }));
+  // Increase the payload size limit for base64 images to 50mb
+  app.use(express.json({ limit: '50mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
-    const targetUrl = `http://aibigtree.com${targetPath}`;
+    const targetUrl = `${SAAS_ORIGIN}${targetPath}`;
     try {
       const response = await axios({
         method: req.method,
@@ -42,7 +137,11 @@ async function startServer() {
       });
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      console.error(`Proxy error for ${targetPath}:`, error.message);
+      console.error(`Proxy error (silenced) for ${targetPath}:`, error.message);
+      // For upload paths, don't return 500 if user doesn't want errors for uploads
+      if (targetPath.includes('/api/upload/')) {
+        return res.status(200).json({ success: false, silenced: true });
+      }
       res.status(500).json({ success: false, error: "代理转发失败" });
     }
   };
@@ -53,29 +152,72 @@ async function startServer() {
   app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
   app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
-  // API routes
-  const multer = (await import('multer')).default;
-  const upload = multer({ 
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 30 * 1024 * 1024 } // 30MB limit
+  app.post("/api/saas/save-result", async (req, res) => {
+    try {
+      const { base64Image, userId, toolId, mimeType } = req.body;
+      if (!base64Image || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: "Missing required fields for SaaS save" });
+      }
+
+      // Convert data URL to buffer if needed
+      let buffer: Buffer;
+      let finalMime = mimeType || 'image/png';
+      
+      if (base64Image.startsWith('data:')) {
+        const parts = base64Image.split(',');
+        buffer = Buffer.from(parts[1], 'base64');
+        const match = parts[0].match(/data:(.*?);/);
+        if (match) finalMime = match[1];
+      } else {
+        buffer = Buffer.from(base64Image, 'base64');
+      }
+
+      const saasImage = await saveImageToSaas({
+        userId,
+        toolId,
+        imageBuffer: buffer,
+        mimeType: finalMime,
+        fileName: `beautified-${Date.now()}.png`
+      });
+
+      res.status(200).json({ success: true, image: saasImage });
+    } catch (error: any) {
+      console.error("[SaaS Save Result] Failed:", error.message);
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
 
-  app.post("/api/analyze", upload.single("image"), async (req, res) => {
+  // API routes
+  app.post("/api/analyze", async (req, res) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "Missing image file" });
+      const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
+
+      // Verify points if SaaS info is provided
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        try {
+          await verifyBeforeGenerate({ userId, toolId });
+        } catch (error: any) {
+          return res.status(403).json({ success: false, error: error.message });
+        }
       }
-      const mimeType = req.file.mimetype || req.body.mimeType;
-      const base64Image = req.file.buffer.toString("base64");
-      
+
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+      }
+
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const response = await ai.models.generateContent({
+      const analysisPromise = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
           {
             inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
+              data: dataToUse,
+              mimeType: mimeToUse,
             },
           },
           {
@@ -128,6 +270,7 @@ async function startServer() {
         },
       });
 
+      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
       const text = response.text;
       if (!text) {
         throw new Error("No response from AI");
@@ -141,18 +284,34 @@ async function startServer() {
     }
   });
 
-  app.post("/api/beautify", upload.single("image"), async (req, res) => {
+  app.post("/api/beautify", async (req, res) => {
+    const totalStart = Date.now();
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: "Missing image file" });
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      
+      // Step 2: Verify points if SaaS info is provided
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const verifyStart = Date.now();
+        try {
+          await verifyBeforeGenerate({ userId, toolId });
+          console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
+        } catch (error: any) {
+          return res.status(403).json({ success: false, error: error.message });
+        }
       }
-      const mimeType = req.file.mimetype || req.body.mimeType;
-      const base64Image = req.file.buffer.toString("base64");
-      
-      const analysis = JSON.parse(req.body.analysis || "{}");
-      const options = JSON.parse(req.body.options || "{}");
-      const allowAdditions = req.body.allowAdditions === "true";
-      
+
+      const getOrigStart = Date.now();
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+        console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
+      }
+
+      const geminiStart = Date.now();
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -164,15 +323,16 @@ async function startServer() {
         : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
       const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-
+      
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
-${analysis.beautifyPoints?.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
+${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
 
 MANDATORY BASELINE (ALWAYS APPLY):
 - FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
 - TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
 - ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
+- RESOLUTION & QUALITY: Generate a high quality image with clean details and natural realistic result at ${options.resolution} resolution.
 
 ${additionRules}
 
@@ -181,14 +341,14 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-      const response = await ai.models.generateContent({
+      const beautifyPromise = ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: {
           parts: [
             {
               inlineData: {
-                data: base64Image,
-                mimeType: mimeType,
+                data: dataToUse,
+                mimeType: mimeToUse,
               },
             },
             {
@@ -198,99 +358,50 @@ GENERAL CONSTRAINTS:
         },
         config: {
           imageConfig: {
-            aspectRatio: options.ratio || "1:1",
-            imageSize: options.resolution || "1K",
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
           }
         }
       });
 
-      let generatedImage = null;
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+      console.log(`[Beautify] Gemini generation took ${Date.now() - geminiStart}ms`);
+
+      let generatedBase64 = null;
+      let generatedMimeType = "image/png";
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
-          generatedImage = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+          generatedBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
           break;
         }
       }
 
-      if (!generatedImage) {
+      if (!generatedBase64) {
         throw new Error("No image generated by AI");
       }
 
-      res.json({ generatedImage });
+      const sharpStart = Date.now();
+      // Step 7: Internal image processing (Sharp) - minimal processing to keep quality
+      let imageBuffer = Buffer.from(generatedBase64, 'base64');
+      
+      imageBuffer = await sharp(imageBuffer)
+        .rotate() 
+        .toBuffer();
+
+      generatedMimeType = "image/png";
+      console.log(`[Beautify] Sharp processing (rotate only) took ${Date.now() - sharpStart}ms`);
+
+      const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
+
+      console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
+      return res.json({ 
+        success: true, 
+        generatedImage: resultBase64
+      });
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/upload", async (req, res) => {
-    try {
-      const { userId, toolId, base64Image, mimeType = "image/png", fileName = "result.png" } = req.body;
-      
-      if (!userId || !toolId || !base64Image) {
-        return res.status(400).json({ success: false, error: 'Missing required parameters' });
-      }
-
-      const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-      const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
-
-      // 1. Consume
-      const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { validateStatus: () => true });
-      if (!consumeRes.data.success) {
-        throw new Error(consumeRes.data.message || consumeRes.data.error || '积分扣除失败');
-      }
-
-      // 2. Get direct token
-      const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
-        userId,
-        toolId,
-        source: 'result',
-        mimeType,
-        fileName,
-        fileSize: imageBuffer.byteLength
-      }, { validateStatus: () => true });
-      const token = tokenRes.data;
-      if (!token.success) throw new Error(token.error || token.message || '获取上传凭证失败');
-
-      // 3. Upload to OSS
-      const uploadRes = await fetch(token.uploadUrl, {
-        method: token.method || 'PUT',
-        headers: token.headers,
-        body: imageBuffer
-      });
-      if (!uploadRes.ok) {
-        throw new Error(`OSS 上传失败: ${uploadRes.status}`);
-      }
-
-      // 4. Commit
-      const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
-        userId,
-        toolId,
-        source: 'result',
-        objectKey: token.objectKey,
-        fileSize: imageBuffer.byteLength
-      }, { validateStatus: () => true });
-      const commit = commitRes.data;
-      if (!commit.savedToRecords) {
-        throw new Error(commit.error || commit.message || '图片入库失败');
-      }
-
-      // Return the recommended format
-      res.json({
-        success: true,
-        images: [
-          commit.image || {
-            recordId: commit.recordId,
-            url: commit.url,
-            fileName: commit.fileName,
-            fileSize: imageBuffer.byteLength
-          }
-        ]
-      });
-    } catch (error: any) {
-      console.error('Upload Error:', error);
-      res.status(500).json({ success: false, error: error.message || '保存失败' });
     }
   });
 

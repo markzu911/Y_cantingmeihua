@@ -25,9 +25,10 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ file: File; mimeType: string; url: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   
   const [activeTab, setActiveTab] = useState<'analysis' | 'decor' | 'settings'>('analysis');
   const [options, setOptions] = useState({
@@ -39,6 +40,7 @@ export default function App() {
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
+  const [isSavingToSaas, setIsSavingToSaas] = useState(false);
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -108,47 +110,44 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const previewUrl = URL.createObjectURL(file);
-    
-    setOriginalImage({
-      file,
-      mimeType: file.type,
-      url: previewUrl
-    });
-    setAnalysisResult(null);
-    setBeautifiedImage(null);
-    setHistory([]);
-    setError(null);
-    setActiveTab('analysis');
+    setIsUploading(true);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      const mimeType = file.type || 'image/jpeg';
+      const base64 = dataUrl.split(',')[1];
+      
+      // Immediately set original image for preview
+      setOriginalImage({
+        base64,
+        mimeType,
+        url: dataUrl
+      });
+      
+      setAnalysisResult(null);
+      setBeautifiedImage(null);
+      setHistory([]);
+      setError(null);
+      setActiveTab('analysis');
+      setIsUploading(false);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleAnalyze = async () => {
     if (!originalImage) return;
     
-    // Verify Phase
-    if (userId && toolId) {
-      setIsAnalyzing(true);
-      try {
-        const verifyRes = await fetch('/api/tool/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId })
-        });
-        const verifyData = await verifyRes.json();
-        if (!verifyData.success) {
-          setError(verifyData.message || '积分不足');
-          setIsAnalyzing(false);
-          return;
-        }
-      } catch (err) {
-        console.error('Verify failed:', err);
-      }
-    }
-
     setIsAnalyzing(true);
     setError(null);
     try {
-      const result = await analyzeRestaurantImage(originalImage.file);
+      // Use saasUrl if available to keep request body small
+      const result = await analyzeRestaurantImage(
+        originalImage.saasUrl ? null : originalImage.base64, 
+        originalImage.saasUrl ? null : originalImage.mimeType, 
+        userId, 
+        toolId,
+        originalImage.saasUrl
+      );
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
@@ -162,84 +161,30 @@ export default function App() {
 
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
+    
     setIsBeautifying(true);
     setError(null);
     try {
-      const resultImage = await beautifyRestaurantImage(
-        originalImage.file,
+      const result = await beautifyRestaurantImage(
+        originalImage.saasUrl ? null : originalImage.base64,
+        originalImage.saasUrl ? null : originalImage.mimeType,
         analysisResult,
         options,
-        allowAdditions
+        allowAdditions,
+        userId,
+        toolId,
+        originalImage.saasUrl
       );
-      setBeautifiedImage(resultImage);
-      setHistory(prev => [resultImage, ...prev]);
+      
+      const { generatedImage } = result;
+      // Immediately show the AI generated image (base64)
+      setBeautifiedImage(generatedImage);
+      setHistory(prev => [generatedImage, ...prev]);
 
-      // Consume Phase & Upload to OSS natively
+      // Step 2: Async Save to SaaS (Points deduction & Gallery)
       if (userId && toolId) {
-        try {
-          const consumeRes = await fetch('/api/tool/consume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, toolId })
-          });
-          const consumeData = await consumeRes.json();
-          if (consumeData.success) {
-            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
-          } else {
-             throw new Error(consumeData.message || '扣费失败');
-          }
-
-          // Direct token & OSS upload
-          // Convert base64 data url to Blob
-          const res = await fetch(resultImage);
-          const blob = await res.blob();
-          
-          const tokenRes = await fetch('/api/upload/direct-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userId,
-              toolId,
-              source: 'result',
-              mimeType: blob.type,
-              fileName: 'beautified.png',
-              fileSize: blob.size
-            })
-          });
-          const tokenData = await tokenRes.json();
-          if (!tokenData.success) throw new Error(tokenData.message || '获取上传凭证失败');
-
-          const uploadRes = await fetch(tokenData.uploadUrl, {
-            method: tokenData.method || 'PUT',
-            headers: tokenData.headers,
-            body: blob
-          });
-
-          if (!uploadRes.ok) throw new Error('上传 OSS 失败');
-
-          const commitRes = await fetch('/api/upload/commit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              userId,
-              toolId,
-              source: 'result',
-              objectKey: tokenData.objectKey,
-              fileSize: blob.size
-            })
-          });
-          const commitData = await commitRes.json();
-          if (!commitData.savedToRecords) throw new Error(commitData.error || '图片入库失败');
-          
-          if (commitData.image && commitData.image.url) {
-             setBeautifiedImage(commitData.image.url);
-             setHistory(prev => prev.map(img => img === resultImage ? commitData.image.url : img));
-          }
-
-        } catch (err: any) {
-          console.error('Save failed:', err);
-          setError(err.message ? `图片已生成，但保存到图库失败: ${err.message}` : '图片已生成，但保存到图库失败');
-        }
+        setIsSavingToSaas(true);
+        handleAsyncSaasSave(generatedImage);
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
@@ -251,6 +196,55 @@ export default function App() {
       }
     } finally {
       setIsBeautifying(false);
+    }
+  };
+
+  const handleAsyncSaasSave = async (base64: string) => {
+    if (!userId || !toolId) return;
+    
+    try {
+      const response = await fetch('/api/saas/save-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base64Image: base64,
+          userId,
+          toolId
+        })
+      });
+      
+      const result = await response.json();
+      if (result.success && result.image?.url) {
+        // Update the image URL with the SaaS URL once it's saved
+        const saasUrl = result.image.url;
+        setBeautifiedImage(saasUrl);
+        // Replace the base64 in history with the permanent URL
+        setHistory(prev => [saasUrl, ...prev.slice(1)]);
+        
+        // Refresh integral after short delay
+        setTimeout(refreshIntegral, 1000);
+      } else {
+        console.warn('SaaS save failed, but image was generated.');
+      }
+    } catch (err) {
+      console.warn('Async SaaS save error:', err);
+    } finally {
+      setIsSavingToSaas(false);
+    }
+  };
+
+  const refreshIntegral = async () => {
+    if (!userId || !toolId) return;
+    try {
+      const response = await fetch('/api/tool/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, toolId })
+      });
+      const res = await response.json();
+      if (res.success) setUserInfo(res.data.user);
+    } catch (err) {
+      console.error('Points refresh failed:', err);
     }
   };
 
@@ -375,7 +369,6 @@ export default function App() {
                     <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
                   </div>
                   <p className="text-sm sm:text-base font-semibold text-[#6B6661] text-center">点击或拖拽上传餐厅图片</p>
-                  <p className="text-xs mt-2 text-[#9B9691] text-center">支持 JPG, PNG, WebP，最大 20MB</p>
                 </div>
               ) : (
                 <div className="space-y-4 sm:space-y-6">
@@ -392,7 +385,7 @@ export default function App() {
                   {!analysisResult && (
                     <button
                       onClick={handleAnalyze}
-                      disabled={isAnalyzing}
+                      disabled={isAnalyzing || isUploading}
                       className="w-full py-3.5 sm:py-4.5 px-4 sm:px-6 btn-primary rounded-xl sm:rounded-[1.25rem] font-semibold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-black/5 hover:shadow-black/10 active:scale-[0.99]"
                     >
                       {isAnalyzing ? (
@@ -431,6 +424,12 @@ export default function App() {
                   onClick={() => setIsModalOpen(true)}
                 >
                   <img src={beautifiedImage} alt="Beautified" className="max-w-full max-h-full object-contain sm:group-hover:scale-[1.03] transition-transform duration-700 ease-out" />
+                  {isSavingToSaas && (
+                    <div className="absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/50 shadow-sm transition-all animate-pulse">
+                      <Loader2 className="w-3 h-3 animate-spin text-[#8DA399]" />
+                      <span className="text-[10px] font-bold text-[#6B6661]">正在同步作品至图库...</span>
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-[#3D3935]/0 sm:group-hover:bg-[#3D3935]/10 transition-colors duration-500 flex items-center justify-center">
                     <span className="opacity-0 sm:group-hover:opacity-100 bg-white/95 text-[#3D3935] px-4 sm:px-6 py-2 sm:py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold shadow-2xl transition-all duration-500 transform translate-y-4 group-hover:translate-y-0">全屏查看细节</span>
                   </div>
