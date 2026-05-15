@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins } from 'lucide-react';
 import { analyzeRestaurantImage, beautifyRestaurantImage, AnalysisResult } from './lib/gemini';
-import { compressImage } from './lib/imageUtils';
 
 // Add type definition for window.aistudio
 declare global {
@@ -26,23 +25,20 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   
   const [activeTab, setActiveTab] = useState<'analysis' | 'decor' | 'settings'>('analysis');
   const [options, setOptions] = useState({
     ratio: '1:1',
     lighting: '暖色调',
-    resolution: '1K',
-    quality: 0.8
+    resolution: '1K'
   });
   
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
-  const [isSavingToSaas, setIsSavingToSaas] = useState(false);
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -108,48 +104,92 @@ export default function App() {
     }
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsUploading(true);
-    setError(null);
-    try {
-      // Compress image client-side before processing
-      const compressed = await compressImage(file, 2048, 2048, options.quality);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
       
-      setOriginalImage({
-        base64: compressed.base64,
-        mimeType: compressed.mimeType,
-        url: compressed.url
-      });
-      
-      setAnalysisResult(null);
-      setBeautifiedImage(null);
-      setHistory([]);
-      setActiveTab('analysis');
-    } catch (err: any) {
-      setError('图片处理失败: ' + (err.message || '未知错误'));
-      console.error(err);
-    } finally {
-      setIsUploading(false);
-    }
+      // Client-side image compression
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const maxSide = 1600;
+
+        // Calculate scaling
+        if (width > height) {
+          if (width > maxSide) {
+            height *= maxSide / width;
+            width = maxSide;
+          }
+        } else {
+          if (height > maxSide) {
+            width *= maxSide / height;
+            height = maxSide;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // Fill with white background for transparency conversion
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+        }
+
+        // Convert to highly compressed JPEG
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const base64 = compressedDataUrl.split(',')[1];
+        
+        setOriginalImage({
+          base64,
+          mimeType: 'image/jpeg',
+          url: compressedDataUrl
+        });
+        setAnalysisResult(null);
+        setBeautifiedImage(null);
+        setHistory([]);
+        setError(null);
+        setActiveTab('analysis');
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleAnalyze = async () => {
     if (!originalImage) return;
     
+    // Verify Phase
+    if (userId && toolId) {
+      setIsAnalyzing(true);
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setError(verifyData.message || '积分不足');
+          setIsAnalyzing(false);
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    }
+
     setIsAnalyzing(true);
     setError(null);
     try {
-      // Use saasUrl if available to keep request body small
-      const result = await analyzeRestaurantImage(
-        originalImage.saasUrl ? null : originalImage.base64, 
-        originalImage.saasUrl ? null : originalImage.mimeType, 
-        userId, 
-        toolId,
-        originalImage.saasUrl
-      );
+      const result = await analyzeRestaurantImage(originalImage.base64, originalImage.mimeType);
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
@@ -163,30 +203,34 @@ export default function App() {
 
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
-    
     setIsBeautifying(true);
     setError(null);
     try {
-      const result = await beautifyRestaurantImage(
-        originalImage.saasUrl ? null : originalImage.base64,
-        originalImage.saasUrl ? null : originalImage.mimeType,
+      const resultImage = await beautifyRestaurantImage(
+        originalImage.base64,
+        originalImage.mimeType,
         analysisResult,
         options,
-        allowAdditions,
-        userId,
-        toolId,
-        originalImage.saasUrl
+        allowAdditions
       );
-      
-      const { generatedImage } = result;
-      // Immediately show the AI generated image (base64)
-      setBeautifiedImage(generatedImage);
-      setHistory(prev => [generatedImage, ...prev]);
+      setBeautifiedImage(resultImage);
+      setHistory(prev => [resultImage, ...prev]);
 
-      // Step 2: Async Save to SaaS (Points deduction & Gallery)
+      // Consume Phase
       if (userId && toolId) {
-        setIsSavingToSaas(true);
-        handleAsyncSaasSave(generatedImage);
+        try {
+          const consumeRes = await fetch('/api/tool/consume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId })
+          });
+          const consumeData = await consumeRes.json();
+          if (consumeData.success) {
+            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+          }
+        } catch (err) {
+          console.error('Consume failed:', err);
+        }
       }
     } catch (err: any) {
       const errorMsg = err.message || '';
@@ -198,55 +242,6 @@ export default function App() {
       }
     } finally {
       setIsBeautifying(false);
-    }
-  };
-
-  const handleAsyncSaasSave = async (base64: string) => {
-    if (!userId || !toolId) return;
-    
-    try {
-      const response = await fetch('/api/saas/save-result', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          base64Image: base64,
-          userId,
-          toolId
-        })
-      });
-      
-      const result = await response.json();
-      if (result.success && result.image?.url) {
-        // Update the image URL with the SaaS URL once it's saved
-        const saasUrl = result.image.url;
-        setBeautifiedImage(saasUrl);
-        // Replace the base64 in history with the permanent URL
-        setHistory(prev => [saasUrl, ...prev.slice(1)]);
-        
-        // Refresh integral after short delay
-        setTimeout(refreshIntegral, 1000);
-      } else {
-        console.warn('SaaS save failed, but image was generated.');
-      }
-    } catch (err) {
-      console.warn('Async SaaS save error:', err);
-    } finally {
-      setIsSavingToSaas(false);
-    }
-  };
-
-  const refreshIntegral = async () => {
-    if (!userId || !toolId) return;
-    try {
-      const response = await fetch('/api/tool/launch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, toolId })
-      });
-      const res = await response.json();
-      if (res.success) setUserInfo(res.data.user);
-    } catch (err) {
-      console.error('Points refresh failed:', err);
     }
   };
 
@@ -371,6 +366,7 @@ export default function App() {
                     <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
                   </div>
                   <p className="text-sm sm:text-base font-semibold text-[#6B6661] text-center">点击或拖拽上传餐厅图片</p>
+                  <p className="text-xs mt-2 text-[#9B9691] text-center">支持 JPG, PNG, WebP，最大 20MB</p>
                 </div>
               ) : (
                 <div className="space-y-4 sm:space-y-6">
@@ -387,7 +383,7 @@ export default function App() {
                   {!analysisResult && (
                     <button
                       onClick={handleAnalyze}
-                      disabled={isAnalyzing || isUploading}
+                      disabled={isAnalyzing}
                       className="w-full py-3.5 sm:py-4.5 px-4 sm:px-6 btn-primary rounded-xl sm:rounded-[1.25rem] font-semibold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-black/5 hover:shadow-black/10 active:scale-[0.99]"
                     >
                       {isAnalyzing ? (
@@ -426,12 +422,6 @@ export default function App() {
                   onClick={() => setIsModalOpen(true)}
                 >
                   <img src={beautifiedImage} alt="Beautified" className="max-w-full max-h-full object-contain sm:group-hover:scale-[1.03] transition-transform duration-700 ease-out" />
-                  {isSavingToSaas && (
-                    <div className="absolute top-4 left-4 bg-white/80 backdrop-blur-sm px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/50 shadow-sm transition-all animate-pulse">
-                      <Loader2 className="w-3 h-3 animate-spin text-[#8DA399]" />
-                      <span className="text-[10px] font-bold text-[#6B6661]">正在同步作品至图库...</span>
-                    </div>
-                  )}
                   <div className="absolute inset-0 bg-[#3D3935]/0 sm:group-hover:bg-[#3D3935]/10 transition-colors duration-500 flex items-center justify-center">
                     <span className="opacity-0 sm:group-hover:opacity-100 bg-white/95 text-[#3D3935] px-4 sm:px-6 py-2 sm:py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold shadow-2xl transition-all duration-500 transform translate-y-4 group-hover:translate-y-0">全屏查看细节</span>
                   </div>
@@ -589,47 +579,30 @@ export default function App() {
                     </div>
                   )}
 
-                      {activeTab === 'settings' && (
-                        <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                          {[
-                            { label: '图片比例', key: 'ratio', options: ['1:1', '3:4', '4:3', '9:16', '16:9'] },
-                            { label: '艺术基调', key: 'lighting', options: ['暖色调', '清新浅色', '高端暗色'] },
-                            { label: '输出分辨率', key: 'resolution', options: ['1K', '2K', '4K'] }
-                          ].map((group) => (
-                            <div key={group.key}>
-                              <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-3 sm:mb-4">{group.label}</label>
-                              <div className="flex flex-wrap gap-2 sm:gap-2.5">
-                                {group.options.map(val => (
-                                  <button
-                                    key={val}
-                                    onClick={() => setOptions({...options, [group.key]: val})}
-                                    className={`px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all border ${options[group.key as keyof typeof options] === val ? 'bg-[#3D3935] border-[#3D3935] text-white shadow-lg sm:shadow-xl' : 'bg-white border-[#EAE3DC] text-[#6B6661] hover:border-[#8DA399] hover:bg-[#FDFCFB]'}`}
-                                  >
-                                    {val}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-
-                          <div>
-                            <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-4">压缩画质 (节省流量 & 避免超时)</label>
-                            <div className="flex items-center gap-4">
-                              <input 
-                                type="range" 
-                                min="0.1" 
-                                max="1.0" 
-                                step="0.1" 
-                                value={options.quality}
-                                onChange={(e) => setOptions({...options, quality: parseFloat(e.target.value)})}
-                                className="flex-1 accent-[#8DA399] h-1.5 bg-[#EAE3DC] rounded-lg appearance-none cursor-pointer"
-                              />
-                              <span className="text-xs font-bold text-[#3D3935] w-8">{Math.round(options.quality * 100)}%</span>
-                            </div>
-                            <p className="text-[10px] text-[#9B9691] mt-2 leading-relaxed">降低画质可显著减少图片体积，提升在弱网环境下的生成成功率。</p>
+                  {activeTab === 'settings' && (
+                    <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      {[
+                        { label: '图片比例', key: 'ratio', options: ['1:1', '3:4', '4:3', '9:16', '16:9'] },
+                        { label: '艺术基调', key: 'lighting', options: ['暖色调', '清新浅色', '高端暗色'] },
+                        { label: '数字分辨率', key: 'resolution', options: ['1K', '2K', '4K'] }
+                      ].map((group) => (
+                        <div key={group.key}>
+                          <label className="block text-[8px] sm:text-[10px] font-bold text-[#9B9691] uppercase tracking-[0.2em] mb-3 sm:mb-4">{group.label}</label>
+                          <div className="flex flex-wrap gap-2 sm:gap-2.5">
+                            {group.options.map(val => (
+                              <button
+                                key={val}
+                                onClick={() => setOptions({...options, [group.key]: val})}
+                                className={`px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all border ${options[group.key as keyof typeof options] === val ? 'bg-[#3D3935] border-[#3D3935] text-white shadow-lg sm:shadow-xl' : 'bg-white border-[#EAE3DC] text-[#6B6661] hover:border-[#8DA399] hover:bg-[#FDFCFB]'}`}
+                              >
+                                {val}
+                              </button>
+                            ))}
                           </div>
                         </div>
-                      )}
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer Action */}
