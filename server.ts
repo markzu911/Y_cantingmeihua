@@ -56,11 +56,16 @@ async function uploadToOssOnly({
   const token = await readJsonResponse(tokenRes);
 
   // 2. PUT to OSS
-  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
+  const uploadRes = await axios({
+    method: (token.method || 'PUT') as any,
+    url: token.uploadUrl,
+    data: imageBuffer,
     headers: { 
       ...(token.headers || {}), 
       'Content-Type': mimeType 
-    }
+    },
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity
   });
   
   if (uploadRes.status < 200 || uploadRes.status >= 300) {
@@ -365,9 +370,7 @@ GENERAL CONSTRAINTS:
       generatedMimeType = "image/jpeg";
       console.log(`[Beautify] Sharp processing (HQ) took ${Date.now() - sharpStart}ms`);
 
-      const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-
-      // Upload result to OSS (Stage 1 of save process)
+      // Upload FULL result to OSS (Stage 1 of save process)
       let pendingUpload = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
@@ -382,14 +385,22 @@ GENERAL CONSTRAINTS:
           console.log(`[Beautify] Background OSS upload took ${Date.now() - uploadStart}ms`);
         } catch (uploadError: any) {
           console.error('[Beautify] Background OSS upload failed:', uploadError.message);
-          // Don't block response
         }
       }
+
+      // Create a small preview for the response to avoid Vercel 4.5MB payload limit
+      const previewStart = Date.now();
+      const previewBuffer = await sharp(imageBuffer)
+        .resize({ width: 1200, withoutEnlargement: true }) // Balanced preview size
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const previewBase64 = `data:image/jpeg;base64,${previewBuffer.toString('base64')}`;
+      console.log(`[Beautify] Preview generation took ${Date.now() - previewStart}ms`);
 
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64,
+        generatedImage: previewBase64,
         pendingUpload
       });
     } catch (error: any) {

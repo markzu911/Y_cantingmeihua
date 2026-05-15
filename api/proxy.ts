@@ -306,9 +306,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         console.error('Sharp processing failed:', sharpError);
       }
 
-      const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
-      
-      // Upload result to OSS (Stage 1 of save process)
+      // Upload FULL result to OSS (Stage 1 of save process)
       let pendingUpload = null;
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
@@ -317,15 +315,25 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
           console.log(`[Beautify] OSS upload took ${Date.now() - uploadStart}ms`);
         } catch (uploadError: any) {
           console.error('[Beautify] Background OSS upload failed:', uploadError.message);
-          // We don't fail the whole beautify request if background upload fails, 
-          // because the user already has the generated image base64 for preview.
         }
+      }
+
+      // Create a small preview for the response to avoid Vercel 4.5MB payload limit
+      let previewBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
+      try {
+        const previewBuffer = await sharp(imageBuffer)
+          .resize({ width: 1200, withoutEnlargement: true })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+        previewBase64 = `data:image/jpeg;base64,${previewBuffer.toString('base64')}`;
+      } catch (previewError) {
+        console.error('Preview generation failed:', previewError);
       }
 
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64,
+        generatedImage: previewBase64,
         pendingUpload
       });
     }
