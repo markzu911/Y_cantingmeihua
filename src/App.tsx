@@ -40,8 +40,6 @@ export default function App() {
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
-  const [beautifyProgress, setBeautifyProgress] = useState(0);
-  const [beautifyMessage, setBeautifyMessage] = useState('');
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -195,8 +193,6 @@ export default function App() {
     if (!originalImage || !analysisResult) return;
     
     setIsBeautifying(true);
-    setBeautifyProgress(0);
-    setBeautifyMessage('正在初始化...');
     setError(null);
     try {
       const result = await beautifyRestaurantImage(
@@ -207,11 +203,7 @@ export default function App() {
         allowAdditions,
         userId,
         toolId,
-        originalImage.saasUrl,
-        (progress, message) => {
-          setBeautifyProgress(progress);
-          setBeautifyMessage(message);
-        }
+        originalImage.saasUrl
       );
       
       const { image: saasImage } = result;
@@ -245,8 +237,6 @@ export default function App() {
       }
     } finally {
       setIsBeautifying(false);
-      setBeautifyProgress(0);
-      setBeautifyMessage('');
     }
   };
 
@@ -611,34 +601,23 @@ export default function App() {
 
                 {/* Footer Action */}
                 <div className="pt-6 sm:pt-8 mt-6 sm:mt-8 border-t border-[#EAE3DC]/60 shrink-0">
-                    <button
-                      onClick={handleBeautify}
-                      disabled={isBeautifying || !analysisResult}
-                      className="relative w-full py-4 sm:py-5 px-4 sm:px-6 btn-primary rounded-2xl sm:rounded-[1.5rem] font-bold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_20px_40px_rgba(61,57,53,0.15)] hover:shadow-[0_25px_50px_rgba(61,57,53,0.25)] active:scale-[0.98] text-sm sm:text-base overflow-hidden"
-                    >
-                      {isBeautifying && (
-                        <div 
-                          className="absolute inset-0 bg-white/20 transition-all duration-300 pointer-events-none" 
-                          style={{ width: `${beautifyProgress}%` }} 
-                        />
-                      )}
-                      <div className="relative z-10 flex items-center gap-2 sm:gap-3">
-                        {isBeautifying ? (
-                          <>
-                            <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
-                            <div className="flex flex-col items-center">
-                              <span className="text-sm sm:text-base">{beautifyMessage || '正在重绘...'}</span>
-                              <span className="text-[10px] sm:text-[12px] opacity-70 serif italic">{beautifyProgress}% 完成</span>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <ImageIcon className="w-5 h-5 sm:w-5.5 sm:h-5.5" />
-                            <span className="text-sm sm:text-base">即刻开启美化</span>
-                          </>
-                        )}
-                      </div>
-                    </button>
+                  <button
+                    onClick={handleBeautify}
+                    disabled={isBeautifying || !analysisResult}
+                    className="w-full py-4 sm:py-5 px-4 sm:px-6 btn-primary rounded-2xl sm:rounded-[1.5rem] font-bold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_20px_40px_rgba(61,57,53,0.15)] hover:shadow-[0_25px_50px_rgba(61,57,53,0.25)] active:scale-[0.98] text-sm sm:text-base"
+                  >
+                    {isBeautifying ? (
+                      <>
+                        <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
+                        <span className="text-sm sm:text-base">AI 画笔重绘中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ImageIcon className="w-5 h-5 sm:w-5.5 sm:h-5.5" />
+                        <span className="text-sm sm:text-base">即刻开启美化</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
             )}

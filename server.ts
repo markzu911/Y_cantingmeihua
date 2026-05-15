@@ -235,92 +235,40 @@ async function startServer() {
     }
   });
 
-const tasks = new Map<string, {
-  status: 'processing' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  image?: any;
-  error?: string;
-  createdAt: number;
-}>();
+  app.post("/api/beautify", async (req, res) => {
+    const startTime = Date.now();
+    try {
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
 
-// Cleanup old tasks (older than 1 hour)
-setInterval(() => {
-  const oneHourAgo = Date.now() - 3600000;
-  for (const [id, task] of tasks.entries()) {
-    if (task.createdAt < oneHourAgo) {
-      tasks.delete(id);
-    }
-  }
-}, 600000);
-
-  app.get("/api/task-status", (req, res) => {
-    const { taskId } = req.query;
-    if (!taskId || typeof taskId !== 'string') {
-      return res.status(400).json({ success: false, error: "Missing taskId" });
-    }
-    const task = tasks.get(taskId);
-    if (!task) {
-      return res.status(404).json({ success: false, error: "Task not found" });
-    }
-    res.json({ success: true, ...task });
-  });
-
-  app.post("/api/beautify-task", async (req, res) => {
-    const taskId = Math.random().toString(36).substring(7);
-    const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
-
-    tasks.set(taskId, {
-      status: 'processing',
-      progress: 0,
-      message: '任务已启动',
-      createdAt: Date.now()
-    });
-
-    // Start background worker
-    (async () => {
-      try {
-        const task = tasks.get(taskId)!;
-        task.progress = 10;
-        task.message = '正在验证点数';
-
-        // 1. Verify points
-        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-          try {
-            await verifyBeforeGenerate({ userId, toolId });
-          } catch (error: any) {
-            task.status = 'failed';
-            task.error = `验证失败: ${error.message}`;
-            return;
-          }
+      // 1. Verify points
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        try {
+          await verifyBeforeGenerate({ userId, toolId });
+        } catch (error: any) {
+          return res.status(403).json({ success: false, error: error.message });
         }
+      }
 
-        task.progress = 20;
-        task.message = '正在准备原图';
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
 
-        let dataToUse = base64Image;
-        let mimeToUse = mimeType;
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+      }
 
-        if (imageUrl && !base64Image) {
-          const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-          dataToUse = Buffer.from(fetchRes.data).toString('base64');
-          mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
-        }
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      const additionsToApply = allowAdditions && analysis.recommendedAdditions
+        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+        : [];
 
-        task.progress = 30;
-        task.message = 'AI 正在生成 beautified 图片';
+      const additionRules = additionsToApply.length > 0
+        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-        const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-        const additionsToApply = allowAdditions && analysis.recommendedAdditions
-          ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-          : [];
-
-        const additionRules = additionsToApply.length > 0
-          ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-          : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
-
-        const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-        
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
+      
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
 ${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
@@ -338,84 +286,66 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-        const beautifyPromise = ai.models.generateContent({
-          model: "gemini-3.1-flash-image-preview",
-          contents: {
-            parts: [
-              { inlineData: { data: dataToUse, mimeType: mimeToUse } },
-              { text: prompt },
-            ],
-          },
-          config: {
-            imageConfig: {
-              aspectRatio: options.ratio,
-              imageSize: options.resolution,
-            }
-          }
-        });
-
-        const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-        
-        let generatedBase64 = null;
-        let generatedMimeType = "image/png";
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            generatedBase64 = part.inlineData.data;
-            generatedMimeType = part.inlineData.mimeType || "image/png";
-            break;
+      const beautifyPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: {
+          parts: [
+            { inlineData: { data: dataToUse, mimeType: mimeToUse } },
+            { text: prompt },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
           }
         }
+      });
 
-        if (!generatedBase64) {
-          throw new Error("No image generated by AI");
-        }
-
-        task.progress = 70;
-        task.message = 'AI 生成完成，正在处理图片 Buffer';
-
-        // Direct Buffer conversion, NO resizing or compression as requested
-        const imageBuffer = Buffer.from(generatedBase64, 'base64');
-        
-        task.progress = 80;
-        task.message = '正在保存到 SaaS 系统';
-
-        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-          // Determine extension
-          let extension = 'png';
-          if (generatedMimeType.includes('jpeg')) extension = 'jpg';
-          else if (generatedMimeType.includes('webp')) extension = 'webp';
-
-          const saasImage = await saveResultImageToSaas({
-            userId,
-            toolId,
-            imageBuffer,
-            mimeType: generatedMimeType,
-            fileName: `result-${Date.now()}.${extension}`
-          });
-          
-          task.image = saasImage;
-        }
-
-        task.progress = 100;
-        task.message = '任务完成';
-        task.status = 'completed';
-
-      } catch (err: any) {
-        console.error(`[Worker ${taskId}] Error:`, err);
-        const task = tasks.get(taskId);
-        if (task) {
-          task.status = 'failed';
-          task.error = err.message || '内部处理错误';
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+      
+      let generatedBase64 = null;
+      let generatedMimeType = "image/png";
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          generatedBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
+          break;
         }
       }
-    })();
 
-    res.json({ success: true, taskId });
-  });
+      if (!generatedBase64) {
+        throw new Error("No image generated by AI");
+      }
 
-  app.post("/api/beautify", async (req, res) => {
-    // Keep this for backward compatibility if needed, but point to using tasks
-    res.status(410).json({ success: false, error: "此接口已迁移至任务模式，请使用 /api/beautify-task" });
+      // Buffer conversion
+      const imageBuffer = Buffer.from(generatedBase64, 'base64');
+      
+      // Save to SaaS
+      let saasImage = null;
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        let extension = 'png';
+        if (generatedMimeType.includes('jpeg')) extension = 'jpg';
+        else if (generatedMimeType.includes('webp')) extension = 'webp';
+
+        saasImage = await saveResultImageToSaas({
+          userId,
+          toolId,
+          imageBuffer,
+          mimeType: generatedMimeType,
+          fileName: `result-${Date.now()}.${extension}`
+        });
+      }
+
+      console.log(`[Beautify] Total time: ${Date.now() - startTime}ms`);
+      return res.json({ 
+        success: true, 
+        image: saasImage
+      });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
 
   // Vite middleware for development

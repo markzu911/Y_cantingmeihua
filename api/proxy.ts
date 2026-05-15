@@ -34,27 +34,6 @@ const allowCors = (fn: any) => async (req: VercelRequest, res: VercelResponse) =
   return await fn(req, res);
 };
 
-const tasks = new Map<string, {
-  status: 'processing' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  image?: any;
-  error?: string;
-  createdAt: number;
-}>();
-
-// Cleanup old tasks every hour
-if (typeof setInterval !== 'undefined') {
-  setInterval(() => {
-    const now = Date.now();
-    for (const [id, task] of tasks.entries()) {
-      if (now - task.createdAt > 3600000) { // 1 hour
-        tasks.delete(id);
-      }
-    }
-  }, 3600000);
-}
-
 const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
@@ -119,136 +98,17 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       })
     });
     const commitResult = await commitRes.json();
-    if (!commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
+    if (commitResult.success === false || !commitResult.savedToRecords) throw new Error(commitResult.error || '图片入库失败');
 
-    return commitResult.image || commitResult;
+    return commitResult.image || {
+      recordId: commitResult.recordId,
+      url: commitResult.url,
+      fileName: commitResult.fileName,
+      fileSize: imageBuffer.length
+    };
   };
 
   try {
-    // New Task Endpoints
-    if (url.includes('/api/task-status')) {
-      const { taskId } = req.query;
-      if (!taskId || typeof taskId !== 'string') return res.status(400).json({ success: false, error: "Missing taskId" });
-      const task = tasks.get(taskId);
-      if (!task) return res.status(404).json({ success: false, error: "Task not found" });
-      return res.status(200).json({ success: true, ...task });
-    }
-
-    if (url.includes('/api/beautify-task')) {
-      const taskId = Math.random().toString(36).substring(7);
-      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
-
-      tasks.set(taskId, {
-        status: 'processing',
-        progress: 0,
-        message: '任务已启动',
-        createdAt: Date.now()
-      });
-
-      // Background Worker
-      (async () => {
-        try {
-          const task = tasks.get(taskId)!;
-          
-          // 1. Verify
-          task.progress = 10;
-          task.message = '正在验证点数';
-          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-            const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, toolId })
-            });
-            const verifyData = await verifyRes.json();
-            if (!verifyData.success) {
-              task.status = 'failed';
-              task.error = verifyData.error || '点数不足';
-              return;
-            }
-          }
-
-          // 2. Prepare Source
-          task.progress = 20;
-          task.message = '正在准备原图';
-          let dataToUse = base64Image;
-          let mimeToUse = mimeType;
-          if (imageUrl && !base64Image) {
-            const imageRes = await fetch(imageUrl);
-            const arrayBuffer = await imageRes.arrayBuffer();
-            dataToUse = Buffer.from(arrayBuffer).toString('base64');
-            mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
-          }
-
-          // 3. AI Generation
-          task.progress = 30;
-          task.message = 'AI 正在生成图片';
-          const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-          const additionsToApply = allowAdditions && analysis.recommendedAdditions
-            ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-            : [];
-          const additionRules = additionsToApply.length > 0
-            ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-            : `CRITICAL: DO NOT add any new objects. Maintain the original layout exactly.`;
-          
-          const prompt = `You are a professional photo restoration expert. Renovation points: ${analysis.beautifyPoints.join(', ')}. Lighting: ${options.lighting}. Image Size: ${options.resolution}. Quality: High. ${additionRules}`;
-          
-          const beautifyPromise = ai.models.generateContent({
-            model: "gemini-3.1-flash-image-preview",
-            contents: {
-              parts: [
-                { inlineData: { data: dataToUse, mimeType: mimeToUse } },
-                { text: prompt },
-              ],
-            },
-            config: {
-              imageConfig: {
-                aspectRatio: options.ratio,
-                imageSize: options.resolution,
-              }
-            }
-          });
-
-          const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-          
-          let generatedImageBase64 = null;
-          let generatedMimeType = "image/png";
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-              generatedImageBase64 = part.inlineData.data;
-              generatedMimeType = part.inlineData.mimeType || "image/png";
-              break;
-            }
-          }
-
-          if (!generatedImageBase64) throw new Error("AI failed to generate image");
-
-          task.progress = 70;
-          task.message = '处理图片数据';
-          const imageBuffer = Buffer.from(generatedImageBase64, 'base64');
-
-          // 4. Save to SaaS
-          task.progress = 80;
-          task.message = '正在保存到云端';
-          if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-            const saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
-            task.image = saasImage;
-          }
-
-          task.progress = 100;
-          task.status = 'completed';
-          task.message = '任务成功完成';
-        } catch (err: any) {
-          console.error(`[Task ${taskId}] Error:`, err);
-          const t = tasks.get(taskId);
-          if (t) {
-            t.status = 'failed';
-            t.error = err.message || '内部服务错误';
-          }
-        }
-      })();
-
-      return res.status(200).json({ success: true, taskId });
-    }
 
     // 1. Tool & Upload Proxy
     if (url.includes('/api/tool/') || url.includes('/api/upload/')) {
@@ -342,9 +202,100 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
       return res.status(200).json(JSON.parse(response.text));
     }
 
-    // 3. Beautify Image (Deprecated - Use Task Mode)
+    // 3. Beautify Image (Synchronous Mode)
     if (url.includes('/api/beautify')) {
-      return res.status(410).json({ success: false, error: "此接口已停用，请使用 /api/beautify-task" });
+      const startTime = Date.now();
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+
+      // 1. Verify points
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const verifyRes = await fetch(`${SAAS_ORIGIN}/api/tool/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          return res.status(403).json(verifyData);
+        }
+      }
+
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const imageRes = await fetch(imageUrl);
+        const arrayBuffer = await imageRes.arrayBuffer();
+        dataToUse = Buffer.from(arrayBuffer).toString('base64');
+        mimeToUse = imageRes.headers.get('content-type') || 'image/jpeg';
+      }
+
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      
+      const additionsToApply = allowAdditions && analysis.recommendedAdditions
+        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+        : [];
+
+      const additionRules = additionsToApply.length > 0
+        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, art, or furniture. Maintain the original layout and contents EXACTLY. Only perform cleaning and restoration.`;
+
+      const prompt = `You are a professional photo restoration expert. Your task is to refurbish this restaurant image based on the provided analysis: ${analysis.beautifyPoints.join(', ')}.
+      CORE REQUIREMENTS:
+      1. Execute all cleaning and staging points (e.g., removing trash, whitening walls, adding bottles/tissues to tables).
+      2. If '人物', '垃圾', or '垃圾桶' are in the analysis, erase them realistically.
+      3. Apply "${options.lighting}" lighting effect.
+      4. RESOLUTION & QUALITY: Generate a high quality image at ${options.resolution} resolution.
+      5. STRICTURE: DO NOT modify any TEXT, SIGNS, or MENUS in the original image. Keep all readable information intact.
+      ${additionRules}
+      CRITICAL CONSTRAINT: Do NOT change the architectural structure. Maintain the original photo's textual details and brand identity perfectly.`;
+      
+      const beautifyPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: {
+          parts: [
+            { inlineData: { data: dataToUse, mimeType: mimeToUse } },
+            { text: prompt },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
+          }
+        }
+      });
+
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+
+      let generatedImageBase64 = null;
+      let generatedMimeType = "image/png";
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          generatedImageBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
+          break;
+        }
+      }
+
+      if (!generatedImageBase64) {
+        throw new Error("AI failed to generate image");
+      }
+
+      // Convert generated image to Buffer - NO RESIZING
+      const imageBuffer = Buffer.from(generatedImageBase64, 'base64');
+      
+      // Save result to SaaS
+      let saasImage = null;
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, generatedMimeType);
+      }
+
+      console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
+      return res.status(200).json({ 
+        success: true, 
+        image: saasImage
+      });
     }
 
     // 4. Generic Gemini fallback
