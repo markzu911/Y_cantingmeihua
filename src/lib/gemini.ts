@@ -9,6 +9,46 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
+export async function analyzeRestaurantImage(
+  base64Image: string | null,
+  mimeType: string | null,
+  userId?: string | null,
+  toolId?: string | null,
+  imageUrl?: string | null
+): Promise<AnalysisResult> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
+
+  try {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ base64Image, imageUrl, mimeType, userId, toolId }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || "Failed to analyze image");
+    }
+
+    const result = await response.json();
+    
+    // 初始化推荐物品的启用状态
+    if (result.recommendedAdditions) {
+      result.recommendedAdditions = result.recommendedAdditions.map((a: any) => ({ ...a, enabled: true }));
+    } else {
+      result.recommendedAdditions = [];
+    }
+    
+    return result;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export interface SaasImage {
   recordId: string;
   url: string;
@@ -16,71 +56,46 @@ export interface SaasImage {
   fileSize?: number;
 }
 
-export interface TaskStatus {
-  success: boolean;
-  status: 'processing' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  result?: SaasImage;
-  error?: string;
-}
-
-export async function analyzeRestaurantImage(
-  imageFile: File,
-  userId?: string | null,
-  toolId?: string | null
-): Promise<AnalysisResult> {
-  const formData = new FormData();
-  formData.append('image', imageFile);
-  formData.append('paramsJSON', JSON.stringify({ userId, toolId }));
-
-  const response = await fetch("/api/analyze", {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || "分析失败");
-  }
-
-  const result = await response.json();
-  if (result.recommendedAdditions) {
-    result.recommendedAdditions = result.recommendedAdditions.map((a: any) => ({ ...a, enabled: true }));
-  } else {
-    result.recommendedAdditions = [];
-  }
-  return result;
-}
-
-export async function createBeautifyTask(
-  imageFile: File,
+export async function beautifyRestaurantImage(
+  base64Image: string | null,
+  mimeType: string | null,
   analysis: AnalysisResult,
   options: { ratio: string; lighting: string; resolution: string },
   allowAdditions: boolean,
   userId?: string | null,
-  toolId?: string | null
-): Promise<{ success: boolean; taskId: string }> {
-  const formData = new FormData();
-  formData.append('image', imageFile);
-  formData.append('paramsJSON', JSON.stringify({
-    userId, toolId, analysis, options, allowAdditions
-  }));
+  toolId?: string | null,
+  imageUrl?: string | null
+): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
-  const response = await fetch("/api/beautify-task", {
-    method: "POST",
-    body: formData,
-  });
+  try {
+    const response = await fetch("/api/beautify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        base64Image,
+        imageUrl,
+        mimeType,
+        analysis,
+        options,
+        allowAdditions,
+        userId,
+        toolId
+      }),
+      signal: controller.signal,
+    });
 
-  const result = await response.json();
-  if (!response.ok || !result.success) {
-    throw new Error(result.error || "创建任务失败");
+    const result = await response.json().catch(() => ({ success: false, error: "Network error or timeout" }));
+
+    if (!response.ok || result.success === false) {
+      throw new Error(result.error || "Failed to beautify image");
+    }
+
+    return result;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return result;
-}
-
-export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  const response = await fetch(`/api/task-status?taskId=${taskId}`);
-  return await response.json();
 }

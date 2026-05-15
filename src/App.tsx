@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins } from 'lucide-react';
-import { analyzeRestaurantImage, createBeautifyTask, getTaskStatus, AnalysisResult, TaskStatus } from './lib/gemini';
+import { analyzeRestaurantImage, beautifyRestaurantImage, AnalysisResult } from './lib/gemini';
 
 // Add type definition for window.aistudio
 declare global {
@@ -25,7 +25,7 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ file: File; url: string; saasUrl?: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -40,7 +40,6 @@ export default function App() {
   const [allowAdditions, setAllowAdditions] = useState(false);
 
   const [isBeautifying, setIsBeautifying] = useState(false);
-  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
   const [beautifiedImage, setBeautifiedImage] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -114,17 +113,53 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      setOriginalImage({
-        file,
-        url: dataUrl
-      });
       
-      setAnalysisResult(null);
-      setBeautifiedImage(null);
-      setHistory([]);
-      setError(null);
-      setActiveTab('analysis');
-      setIsUploading(false);
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const maxSide = 3072;
+
+        if (width > height) {
+          if (width > maxSide) {
+            height *= maxSide / width;
+            width = maxSide;
+          }
+        } else {
+          if (height > maxSide) {
+            width *= maxSide / height;
+            height = maxSide;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+        }
+
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const base64 = compressedDataUrl.split(',')[1];
+        
+        // Immediately set original image for preview
+        setOriginalImage({
+          base64,
+          mimeType: 'image/jpeg',
+          url: compressedDataUrl
+        });
+        
+        setAnalysisResult(null);
+        setBeautifiedImage(null);
+        setHistory([]);
+        setError(null);
+        setActiveTab('analysis');
+        setIsUploading(false);
+      };
+      img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
@@ -135,10 +170,13 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     try {
+      // Use saasUrl if available to keep request body small
       const result = await analyzeRestaurantImage(
-        originalImage.file,
+        originalImage.saasUrl ? null : originalImage.base64, 
+        originalImage.saasUrl ? null : originalImage.mimeType, 
         userId, 
-        toolId
+        toolId,
+        originalImage.saasUrl
       );
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
@@ -151,60 +189,53 @@ export default function App() {
     }
   };
 
-  const pollTaskStatus = async (taskId: string) => {
-    try {
-      const status = await getTaskStatus(taskId);
-      setTaskStatus(status);
-
-      if (status.status === 'completed' && status.result) {
-        setIsBeautifying(false);
-        setBeautifiedImage(status.result.url);
-        setHistory(prev => [status.result!.url, ...prev]);
-        
-        // Refresh integral
-        if (userId && toolId) {
-          setTimeout(() => {
-            fetch('/api/tool/launch', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId, toolId })
-            }).then(r => r.json())
-              .then(res => { if (res.success) setUserInfo(res.data.user); });
-          }, 1000);
-        }
-      } else if (status.status === 'failed') {
-        setIsBeautifying(false);
-        setError(status.error || '处理失败');
-      } else {
-        // Continue polling
-        setTimeout(() => pollTaskStatus(taskId), 2000);
-      }
-    } catch (err: any) {
-      setIsBeautifying(false);
-      setError('轮询任务状态失败');
-    }
-  };
-
   const handleBeautify = async () => {
     if (!originalImage || !analysisResult) return;
     
     setIsBeautifying(true);
-    setTaskStatus({ status: 'processing', progress: 0, message: '正在启动服务器任务...', success: true });
     setError(null);
     try {
-      const { taskId } = await createBeautifyTask(
-        originalImage.file,
+      const result = await beautifyRestaurantImage(
+        originalImage.saasUrl ? null : originalImage.base64,
+        originalImage.saasUrl ? null : originalImage.mimeType,
         analysisResult,
         options,
         allowAdditions,
         userId,
-        toolId
+        toolId,
+        originalImage.saasUrl
       );
       
-      pollTaskStatus(taskId);
+      const { generatedImage, image: saasImage } = result;
+      // Immediately show the AI generated image (base64)
+      const finalUrl = saasImage?.url || generatedImage;
+      setBeautifiedImage(finalUrl);
+      setHistory(prev => [finalUrl, ...prev]);
+
+      // Refresh integral after generation
+      if (userId && toolId) {
+        // Delay point refresh slightly as it happens asynchronously on server
+        setTimeout(() => {
+          fetch('/api/tool/launch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId })
+          }).then(r => r.json())
+            .then(res => {
+              if (res.success) setUserInfo(res.data.user);
+            }).catch(console.error);
+        }, 3000);
+      }
     } catch (err: any) {
+      const errorMsg = err.message || '';
+      if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('Requested entity was not found')) {
+        setHasKey(false);
+        setError('API Key 权限不足或未找到。请重新选择一个已启用计费的 Google Cloud 项目的 API Key。');
+      } else {
+        setError(errorMsg || '美化失败，请重试');
+      }
+    } finally {
       setIsBeautifying(false);
-      setError(err.message || '美化任务启动失败');
     }
   };
 
@@ -575,18 +606,10 @@ export default function App() {
                     className="w-full py-4 sm:py-5 px-4 sm:px-6 btn-primary rounded-2xl sm:rounded-[1.5rem] font-bold flex items-center justify-center gap-2 sm:gap-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_20px_40px_rgba(61,57,53,0.15)] hover:shadow-[0_25px_50px_rgba(61,57,53,0.25)] active:scale-[0.98] text-sm sm:text-base"
                   >
                     {isBeautifying ? (
-                      <div className="flex flex-col items-center gap-4 w-full">
-                        <div className="w-full bg-[#EAE3DC] h-2 rounded-full overflow-hidden">
-                          <div 
-                            className="bg-[#3D3935] h-full transition-all duration-500" 
-                            style={{ width: `${taskStatus?.progress || 0}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
-                          <span className="text-sm sm:text-base font-medium">{taskStatus?.message || 'AI 画笔重绘中...'}</span>
-                        </div>
-                      </div>
+                      <>
+                        <Loader2 className="w-5 h-5 sm:w-5.5 sm:h-5.5 animate-spin" />
+                        <span className="text-sm sm:text-base">AI 画笔重绘中...</span>
+                      </>
                     ) : (
                       <>
                         <ImageIcon className="w-5 h-5 sm:w-5.5 sm:h-5.5" />

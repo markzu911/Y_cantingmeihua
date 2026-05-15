@@ -6,27 +6,9 @@ import dotenv from "dotenv";
 import axios from "axios";
 import sharp from "sharp";
 
-import multer from "multer";
-import { v4 as uuidv4 } from "uuid";
-
 dotenv.config({ override: true });
 
 const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
-
-// Task store for background processing
-const tasks = new Map<string, {
-  status: 'processing' | 'completed' | 'failed';
-  progress: number;
-  message?: string;
-  result?: any;
-  error?: string;
-}>();
-
-// Configure multer for memory storage
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit
-});
 
 const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
   return Promise.race([
@@ -38,70 +20,72 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, message: string): Promi
 async function readJsonResponse(res: any) {
   const data = res.data;
   if (!data || data.success === false) {
-    const errorMsg = data?.error || data?.message || `请求失败: ${res.status}`;
-    console.error(`[SaaS API Error]`, errorMsg);
-    throw new Error(errorMsg);
+    throw new Error(data?.error || data?.message || `请求失败: ${res.status}`);
   }
   return data;
 }
 
-// Unified SaaS API call helper
-async function saasPost(path: string, body: any) {
-  try {
-    const res = await axios.post(`${SAAS_ORIGIN}${path}`, body);
-    return await readJsonResponse(res);
-  } catch (error: any) {
-    const msg = error.response?.data?.error || error.response?.data?.message || error.message;
-    console.error(`[SaaS POST Failed] ${path}:`, msg);
-    throw new Error(msg);
-  }
-}
-
 async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId: string }) {
-  return saasPost('/api/tool/verify', { userId, toolId });
+  const res = await axios.post(`${SAAS_ORIGIN}/api/tool/verify`, { userId, toolId });
+  return readJsonResponse(res);
 }
 
-async function saveResultToSaas(userId: string, toolId: string, imageBuffer: Buffer, mimeType: string) {
+async function saveResultImageToSaas({
+  userId,
+  toolId,
+  imageBuffer,
+  mimeType = 'image/png',
+  fileName
+}: {
+  userId: string,
+  toolId: string,
+  imageBuffer: Buffer,
+  mimeType?: string,
+  fileName?: string
+}) {
   // 1. Consume points
-  await saasPost('/api/tool/consume', { userId, toolId });
+  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
+  await readJsonResponse(consumeRes);
 
   // 2. Direct Token
-  const fileName = `beautified-${Date.now()}.jpg`;
-  const token = await saasPost('/api/upload/direct-token', {
-    userId, toolId, source: 'result', mimeType, fileName, fileSize: imageBuffer.byteLength
+  const finalFileName = fileName || `beautified-${Date.now()}.jpg`;
+  const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
+    userId,
+    toolId,
+    source: 'result',
+    mimeType,
+    fileName: finalFileName,
+    fileSize: imageBuffer.byteLength
   });
+  const token = await readJsonResponse(tokenRes);
 
-  // 3. PUT to OSS (Using fetch for strict header handling as per spec)
-  const headers: Record<string, string> = { ...(token.headers || {}) };
-  if (!headers['Content-Type'] && !headers['content-type']) {
-    headers['Content-Type'] = mimeType;
-  }
-
-  const uploadRes = await fetch(token.uploadUrl, {
-    method: token.method || 'PUT',
-    headers: headers,
-    body: imageBuffer
+  // 3. PUT to OSS using token headers
+  const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
+    headers: { 
+      ...(token.headers || {}), 
+      'Content-Type': mimeType 
+    }
   });
-
-  if (!uploadRes.ok) {
+  
+  if (uploadRes.status < 200 || uploadRes.status >= 300) {
     throw new Error(`OSS 上传失败: ${uploadRes.status}`);
   }
 
   // 4. Commit
-  const commit = await saasPost('/api/upload/commit', {
-    userId, toolId, source: 'result', objectKey: token.objectKey, fileSize: imageBuffer.byteLength
+  const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
+    userId,
+    toolId,
+    source: 'result',
+    objectKey: token.objectKey,
+    fileName: finalFileName,
+    fileSize: imageBuffer.byteLength
   });
-
-  if (!commit.savedToRecords) {
-    throw new Error(commit.error || '图片入库失败');
+  const commitResult = await readJsonResponse(commitRes);
+  if (!commitResult.savedToRecords) {
+    throw new Error(commitResult.error || '图片入库失败');
   }
 
-  return commit.image || {
-    recordId: commit.recordId,
-    url: commit.url,
-    fileName: commit.fileName,
-    fileSize: imageBuffer.byteLength
-  };
+  return commitResult.image || commitResult;
 }
 
 function getGeminiApiKey() {
@@ -154,190 +138,251 @@ async function startServer() {
   app.post("/api/upload/direct-token", (req, res) => proxyRequest(req, res, "/api/upload/direct-token"));
   app.post("/api/upload/commit", (req, res) => proxyRequest(req, res, "/api/upload/commit"));
 
-  // Task-based Beautification Background Worker
-  async function runBeautifyTask(taskId: string, params: any, imageBuffer: Buffer, originalMime: string) {
-    const { userId, toolId, analysis, options, allowAdditions } = params;
-    
+  // API routes
+  app.post("/api/analyze", async (req, res) => {
     try {
-      tasks.set(taskId, { status: 'processing', progress: 10, message: '正在验证积分...' });
+      const { base64Image, imageUrl, mimeType, userId, toolId } = req.body;
 
-      // 1. Verify before everything
+      // Verify points if SaaS info is provided
       if (userId && toolId && userId !== 'null' && toolId !== 'null') {
         try {
           await verifyBeforeGenerate({ userId, toolId });
         } catch (error: any) {
-          tasks.set(taskId, { status: 'failed', progress: 0, error: `资格验证失败: ${error.message}` });
-          return;
-        }
-      }
-
-      tasks.set(taskId, { status: 'processing', progress: 20, message: 'AI 正在生成精修图 (4K)...' });
-
-      // 2. AI Generation
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      const additionsToApply = allowAdditions && analysis.recommendedAdditions
-        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-        : [];
-      const additionRules = additionsToApply.length > 0
-        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.join('\n')}`
-        : `CRITICAL: DO NOT add any new objects.`;
-
-      const prompt = `You are a professional restaurant interior designer. Renovate this image.
-      USER POINTS: ${analysis.beautifyPoints.join(', ')}
-      LIGHTING: ${options.lighting}
-      RESOLUTION: ${options.resolution}
-      ${additionRules}
-      MAINTAIN ORIGINAL STRUCTURE. CLEAN EVERYTHING.`;
-
-      const beautifyPromise = ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            { inlineData: { data: imageBuffer.toString('base64'), mimeType: originalMime } },
-            { text: prompt },
-          ],
-        },
-        config: {
-          imageConfig: { aspectRatio: options.ratio, imageSize: options.resolution }
-        }
-      });
-
-      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-      
-      let generatedBase64 = null;
-      for (const part of (response as any).candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          generatedBase64 = part.inlineData.data;
-          break;
-        }
-      }
-
-      if (!generatedBase64) throw new Error("AI 未能生成图片");
-
-      tasks.set(taskId, { status: 'processing', progress: 60, message: '正在进行后期处理...' });
-
-      // 3. Sharp Processing (HQ)
-      let resultBuffer = Buffer.from(generatedBase64, 'base64');
-      resultBuffer = await sharp(resultBuffer)
-        .rotate() 
-        .jpeg({ quality: 100, chromaSubsampling: '4:4:4', force: true })
-        .toBuffer();
-      
-      const generatedMimeType = "image/jpeg";
-
-      tasks.set(taskId, { status: 'processing', progress: 75, message: '正在保存到 SaaS...' });
-
-      // 4. Save to SaaS (Strict Order: Consume -> Token -> PUT -> Commit)
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const saasImage = await saveResultToSaas(userId, toolId, resultBuffer, generatedMimeType);
-
-        tasks.set(taskId, { 
-          status: 'completed', 
-          progress: 100, 
-          result: saasImage
-        });
-      } else {
-        // No SaaS user, just finish with base64 for preview (though user said don't return big base64, but without SaaS we have no URL)
-        // In local mode, we might need a local temp URL, but user's goal is SaaS integration.
-        tasks.set(taskId, { 
-          status: 'completed', 
-          progress: 100, 
-          result: {
-            url: `data:${generatedMimeType};base64,${resultBuffer.toString('base64').substring(0, 500000)}... (Base64 truncated)`,
-            previewOnly: true
-          }
-        });
-      }
-    } catch (error: any) {
-      console.error(`[Task ${taskId}] failed:`, error.message);
-      tasks.set(taskId, { status: 'failed', progress: 0, error: error.message });
-    }
-  }
-
-  // New Task Endpoints
-  app.post("/api/beautify-task", upload.single('image'), async (req, res) => {
-    try {
-      const { paramsJSON } = req.body;
-      const params = JSON.parse(paramsJSON);
-      const imageBuffer = req.file?.buffer;
-      const originalMime = req.file?.mimetype || 'image/jpeg';
-
-      if (!imageBuffer) return res.status(400).json({ success: false, error: '未接收到图片数据' });
-      
-      const taskId = uuidv4();
-      tasks.set(taskId, { status: 'processing', progress: 0, message: '任务已排期' });
-
-      // Start background worker
-      runBeautifyTask(taskId, params, imageBuffer, originalMime);
-
-      res.json({ success: true, taskId });
-    } catch (error: any) {
-      res.status(500).json({ success: false, error: error.message });
-    }
-  });
-
-  app.get("/api/task-status", (req, res) => {
-    const taskId = req.query.taskId as string;
-    const task = tasks.get(taskId);
-    if (!task) return res.status(404).json({ success: false, error: '任务不存在' });
-    res.json({ success: true, ...task });
-  });
-
-  // API routes
-  app.post("/api/analyze", upload.single('image'), async (req, res) => {
-    try {
-      const { paramsJSON } = req.body;
-      const params = paramsJSON ? JSON.parse(paramsJSON) : (req.body || {});
-      const { userId, toolId } = params;
-      
-      const imageBuffer = req.file?.buffer;
-      const mimeType = req.file?.mimetype || 'image/jpeg';
-
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        try { await verifyBeforeGenerate({ userId, toolId }); } catch (error: any) {
           return res.status(403).json({ success: false, error: error.message });
         }
       }
 
-      if (!imageBuffer) return res.status(400).json({ success: false, error: '未接收到图片' });
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+      }
 
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       const analysisPromise = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          { inlineData: { data: imageBuffer.toString('base64'), mimeType } },
-          { text: "Analyze this restaurant image. Identify layout, style, and beautify points. Return JSON." },
+          {
+            inlineData: {
+              data: dataToUse,
+              mimeType: mimeToUse,
+            },
+          },
+          {
+            text: "Analyze this restaurant image. Identify the layout, decor style, and specific points that need beautification. CRITICAL RULES for beautification points: 1. You MUST generate specific, descriptive beautification points for at least these three mandatory areas: Walls (墙面), Floors (地面), and Tables (桌面). 2. IN ADDITION to those three, you MUST also add other beautification points based on your visual analysis of the image (e.g., ceiling, windows, specific clutter, etc.). 3. Each point MUST be short (under 20 characters). 4. DO NOT alter, add, or remove existing objects. 5. Recommend 3-5 new decorative items to add (e.g., wall art, plants, tissue boxes) to enhance the atmosphere. Also recommend a lighting effect from ['暖色调', '清新浅色', '高端暗色'] and explain why. ALL OUTPUT MUST BE IN CHINESE (简体中文). Return the result in JSON format.",
+          },
         ],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              layout: { type: Type.STRING },
-              style: { type: Type.STRING },
-              beautifyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
-              recommendedLighting: { type: Type.STRING },
-              lightingReason: { type: Type.STRING },
+              layout: {
+                 type: Type.STRING,
+                description: "餐厅布局描述 (中文)",
+              },
+              style: {
+                type: Type.STRING,
+                description: "装修风格描述 (中文)",
+              },
+              beautifyPoints: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.STRING,
+                },
+                description: "需要美化的具体点列表 (中文，每条不超过20字，不改变原有物品，墙面可增白/修复)",
+              },
+              recommendedLighting: {
+                type: Type.STRING,
+                description: "推荐的光影效果，必须是 '暖色调', '清新浅色', 或 '高端暗色' 之一",
+              },
+              lightingReason: {
+                type: Type.STRING,
+                description: "为什么推荐这个光影效果的理由 (中文)",
+              },
               recommendedAdditions: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    item: { type: Type.STRING },
-                    reason: { type: Type.STRING }
+                    item: { type: Type.STRING, description: "推荐添加的物品名称 (中文，例如：墙面挂画、桌面绿植、餐巾盒)" },
+                    reason: { type: Type.STRING, description: "推荐理由 (中文)" }
                   },
                   required: ["item", "reason"]
-                }
+                },
+                description: "推荐添加的装饰物品列表 (3-5个)"
               }
             },
             required: ["layout", "style", "beautifyPoints", "recommendedLighting", "lightingReason", "recommendedAdditions"],
+          },
+        },
+      });
+
+      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
+      const text = response.text;
+      if (!text) {
+        throw new Error("No response from AI");
+      }
+      
+      const result = JSON.parse(text);
+      res.json(result);
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/beautify", async (req, res) => {
+    const totalStart = Date.now();
+    try {
+      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+      
+      // Step 2: Verify points if SaaS info is provided
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const verifyStart = Date.now();
+        try {
+          await verifyBeforeGenerate({ userId, toolId });
+          console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
+        } catch (error: any) {
+          return res.status(403).json({ success: false, error: error.message });
+        }
+      }
+
+      const getOrigStart = Date.now();
+      let dataToUse = base64Image;
+      let mimeToUse = mimeType;
+
+      if (imageUrl && !base64Image) {
+        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+        dataToUse = Buffer.from(fetchRes.data).toString('base64');
+        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+        console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
+      }
+
+      const geminiStart = Date.now();
+      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+      
+      const additionsToApply = allowAdditions && analysis.recommendedAdditions
+        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+        : [];
+
+      const additionRules = additionsToApply.length > 0
+        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
+
+      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
+      
+CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
+USER'S BEAUTIFICATION POINTS:
+${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
+
+MANDATORY BASELINE (ALWAYS APPLY):
+- FLOORS: The floor MUST be completely renovated, spotless, and look brand new. Erase all dirt, stains, dark patches, and damage. It should look like newly installed, premium flooring. Absolutely no dirty spots allowed.
+- TABLES: Remove all irrelevant clutter from the tables (e.g., used bowls, plates, payment QR codes). Keep existing essential items like tissue boxes and condiment/vinegar bottles, but arrange them neatly and orderly.
+- ATMOSPHERE: Apply a "${options.lighting}" lighting effect to make the space look inviting and match the requested mood.
+- RESOLUTION & QUALITY: Generate a high quality image with clean details and natural realistic result at ${options.resolution} resolution.
+
+${additionRules}
+
+GENERAL CONSTRAINTS:
+- CRITICAL STRUCTURAL RULE: DO NOT change the structural layout of the room under any circumstances. ABSOLUTELY NO adding new windows, NO adding new doors, and NO changing the architectural structure (walls, ceilings, pillars). You are ONLY allowed to do soft furnishings, cleaning, and surface renovations.
+- Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
+- Make the final image look highly realistic, spotless, and premium.`;
+
+      const beautifyPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: dataToUse,
+                mimeType: mimeToUse,
+              },
+            },
+            {
+              text: prompt,
+            },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: options.ratio,
+            imageSize: options.resolution,
           }
         }
       });
 
-      const response = await withTimeout(analysisPromise, 300000, "AI 处理超时(300s)");
-      res.json(JSON.parse((response as any).text()));
+      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+      console.log(`[Beautify] Gemini generation took ${Date.now() - geminiStart}ms`);
+
+      let generatedBase64 = null;
+      let generatedMimeType = "image/png";
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          generatedBase64 = part.inlineData.data;
+          generatedMimeType = part.inlineData.mimeType || "image/png";
+          break;
+        }
+      }
+
+      if (!generatedBase64) {
+        throw new Error("No image generated by AI");
+      }
+
+      const sharpStart = Date.now();
+      // Step 7: Internal image processing (Sharp)
+      let imageBuffer = Buffer.from(generatedBase64, 'base64');
+      const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
+
+      imageBuffer = await sharp(imageBuffer)
+        .rotate() 
+        .resize({ 
+          width: resizeLimit, 
+          height: resizeLimit, 
+          fit: 'inside', 
+          withoutEnlargement: true 
+        })
+        .jpeg({ 
+          quality: 90, 
+          force: true 
+        })
+        .toBuffer();
+
+      generatedMimeType = "image/jpeg";
+      console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
+
+      const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
+
+      // Save result to SaaS (Must Await)
+      let saasImage = null;
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        const saasStart = Date.now();
+        try {
+          saasImage = await saveResultImageToSaas({
+            userId,
+            toolId,
+            imageBuffer,
+            mimeType: generatedMimeType,
+            fileName: `beautified-${Date.now()}.jpg`
+          });
+          console.log(`[Beautify] SaaS save took ${Date.now() - saasStart}ms`);
+        } catch (saveError: any) {
+          console.error('[Beautify] SaaS save failed:', saveError.message);
+          return res.status(500).json({ success: false, error: `图片保存失败: ${saveError.message}` });
+        }
+      }
+
+      console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
+      return res.json({ 
+        success: true, 
+        generatedImage: resultBase64,
+        image: saasImage
+      });
     } catch (error: any) {
+      console.error(error);
       res.status(500).json({ error: error.message });
     }
   });
