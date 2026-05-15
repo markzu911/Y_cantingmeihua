@@ -25,7 +25,7 @@ interface SaasToolInfo {
 
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
-  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; file?: File; saasUrl?: string } | null>(null);
+  const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string; saasUrl?: string } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -121,8 +121,7 @@ export default function App() {
       setOriginalImage({
         base64,
         mimeType,
-        url: dataUrl,
-        file
+        url: dataUrl
       });
       
       setAnalysisResult(null);
@@ -147,8 +146,7 @@ export default function App() {
         originalImage.saasUrl ? null : originalImage.mimeType, 
         userId, 
         toolId,
-        originalImage.saasUrl,
-        originalImage.file
+        originalImage.saasUrl
       );
       setAnalysisResult(result);
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
@@ -175,8 +173,7 @@ export default function App() {
         allowAdditions,
         userId,
         toolId,
-        originalImage.saasUrl,
-        originalImage.file
+        originalImage.saasUrl
       );
       
       const { generatedImage } = result;
