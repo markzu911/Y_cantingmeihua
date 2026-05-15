@@ -114,72 +114,40 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
+      const mimeType = file.type || 'image/jpeg';
+      const base64 = dataUrl.split(',')[1];
       
-      const img = new Image();
-      img.onload = async () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        const maxSide = 3072;
-
-        if (width > height) {
-          if (width > maxSide) {
-            height *= maxSide / width;
-            width = maxSide;
+      // Immediately set original image for preview
+      setOriginalImage({
+        base64,
+        mimeType,
+        url: dataUrl
+      });
+      
+      // Trigger SaaS pre-upload if we have user info
+      if (userId && toolId) {
+        setIsSassUploading(true);
+        fetch('/api/upload-source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64Image: base64, mimeType, userId, toolId })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.image?.url) {
+            setOriginalImage(prev => prev ? { ...prev, saasUrl: data.image.url } : null);
           }
-        } else {
-          if (height > maxSide) {
-            width *= maxSide / height;
-            height = maxSide;
-          }
-        }
+        })
+        .catch(err => console.error('SaaS pre-upload failed:', err))
+        .finally(() => setIsSassUploading(false));
+      }
 
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-        }
-
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
-        const base64 = compressedDataUrl.split(',')[1];
-        const mimeType = 'image/jpeg';
-        
-        // Immediately set original image for preview
-        setOriginalImage({
-          base64,
-          mimeType,
-          url: compressedDataUrl
-        });
-        
-        // Trigger SaaS pre-upload if we have user info
-        if (userId && toolId) {
-          setIsSassUploading(true);
-          fetch('/api/upload-source', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base64Image: base64, mimeType, userId, toolId })
-          })
-          .then(res => res.json())
-          .then(data => {
-            if (data.success && data.image?.url) {
-              setOriginalImage(prev => prev ? { ...prev, saasUrl: data.image.url } : null);
-            }
-          })
-          .catch(err => console.error('SaaS pre-upload failed:', err))
-          .finally(() => setIsSassUploading(false));
-        }
-
-        setAnalysisResult(null);
-        setBeautifiedImage(null);
-        setHistory([]);
-        setError(null);
-        setActiveTab('analysis');
-        setIsUploading(false);
-      };
-      img.src = dataUrl;
+      setAnalysisResult(null);
+      setBeautifiedImage(null);
+      setHistory([]);
+      setError(null);
+      setActiveTab('analysis');
+      setIsUploading(false);
     };
     reader.readAsDataURL(file);
   };

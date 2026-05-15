@@ -45,14 +45,16 @@ async function saveImageToSaas({
   mimeType?: string,
   fileName?: string
 }) {
+  const saasTimeout = 120000; // 120 seconds
   const finalFileName = fileName || `${source}-${Date.now()}.jpg`;
 
+  console.log(`[SaaS Upload] Starting ${source} upload, size: ${imageBuffer.byteLength} bytes`);
+
   // 1. & 2. Parallellize Point Consumption and Direct Token request
-  // Note: source='source' usually doesn't consume points in our SaaS logic
   const tasks: Promise<any>[] = [];
   
   if (source === 'result') {
-    tasks.push(axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }));
+    tasks.push(axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId }, { timeout: saasTimeout }));
   } else {
     tasks.push(Promise.resolve({ data: { success: true } }));
   }
@@ -64,7 +66,7 @@ async function saveImageToSaas({
     mimeType,
     fileName: finalFileName,
     fileSize: imageBuffer.byteLength
-  }));
+  }, { timeout: saasTimeout }));
 
   const [consumeRes, tokenRes] = await Promise.all(tasks);
   
@@ -73,17 +75,24 @@ async function saveImageToSaas({
   }
   const token = await readJsonResponse(tokenRes);
 
+  console.log(`[SaaS Upload] Got token, uploading to OSS...`);
+
   // 3. PUT to OSS using token headers
   const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
     headers: { 
       ...(token.headers || {}), 
       'Content-Type': mimeType 
-    }
+    },
+    timeout: saasTimeout,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity
   });
   
   if (uploadRes.status < 200 || uploadRes.status >= 300) {
     throw new Error(`OSS 上传失败: ${uploadRes.status}`);
   }
+
+  console.log(`[SaaS Upload] OSS upload success, committing...`);
 
   // 4. Commit
   const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
@@ -93,8 +102,10 @@ async function saveImageToSaas({
     objectKey: token.objectKey,
     fileName: finalFileName,
     fileSize: imageBuffer.byteLength
-  });
+  }, { timeout: saasTimeout });
   const commitResult = await readJsonResponse(commitRes);
+  console.log(`[SaaS Upload] Commit success for ${source}`);
+
   if (source === 'result' && !commitResult.savedToRecords) {
     throw new Error(commitResult.error || '图片入库失败');
   }
@@ -122,8 +133,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Increase the payload size limit for base64 images to 20mb as per client expectation
-  app.use(express.json({ limit: '20mb' }));
+  // Increase the payload size limit for base64 images to 50mb
+  app.use(express.json({ limit: '50mb' }));
 
   // SaaS Proxy logic
   const proxyRequest = async (req: express.Request, res: express.Response, targetPath: string) => {
@@ -371,26 +382,15 @@ GENERAL CONSTRAINTS:
       }
 
       const sharpStart = Date.now();
-      // Step 7: Internal image processing (Sharp)
+      // Step 7: Internal image processing (Sharp) - minimal processing to keep quality
       let imageBuffer = Buffer.from(generatedBase64, 'base64');
-      const resizeLimit = options.resolution === '4K' ? 3840 : (options.resolution === '2K' ? 2560 : 1600);
-
+      
       imageBuffer = await sharp(imageBuffer)
         .rotate() 
-        .resize({ 
-          width: resizeLimit, 
-          height: resizeLimit, 
-          fit: 'inside', 
-          withoutEnlargement: true 
-        })
-        .jpeg({ 
-          quality: 90, 
-          force: true 
-        })
         .toBuffer();
 
-      generatedMimeType = "image/jpeg";
-      console.log(`[Beautify] Sharp processing took ${Date.now() - sharpStart}ms`);
+      generatedMimeType = "image/png";
+      console.log(`[Beautify] Sharp processing (rotate only) took ${Date.now() - sharpStart}ms`);
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
