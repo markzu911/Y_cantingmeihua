@@ -206,18 +206,18 @@ export default function App() {
         originalImage.saasUrl
       );
       
-      const { generatedImage } = result;
+      const { generatedImage, pendingUpload } = result;
       // Immediately show the AI generated image (base64)
       setBeautifiedImage(generatedImage);
       setHistory(prev => [generatedImage, ...prev]);
 
-      // Handle async save to SaaS via second endpoint
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+      // Handle async save to SaaS via second endpoint (Stage 2: Commit)
+      if (userId && toolId && userId !== 'null' && toolId !== 'null' && pendingUpload) {
         const saveStart = Date.now();
         fetch('/api/save-result', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, toolId, generatedImage })
+          body: JSON.stringify({ userId, toolId, pendingUpload })
         }).then(r => r.json())
           .then(saveRes => {
             console.log(`[SaveResult] took ${Date.now() - saveStart}ms, success:`, saveRes.success);

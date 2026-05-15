@@ -30,7 +30,7 @@ async function verifyBeforeGenerate({ userId, toolId }: { userId: string, toolId
   return readJsonResponse(res);
 }
 
-async function saveResultImageToSaas({
+async function uploadToOssOnly({
   userId,
   toolId,
   imageBuffer,
@@ -43,11 +43,7 @@ async function saveResultImageToSaas({
   mimeType?: string,
   fileName?: string
 }) {
-  // 1. Consume points
-  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
-  await readJsonResponse(consumeRes);
-
-  // 2. Direct Token
+  // 1. Direct Token
   const finalFileName = fileName || `beautified-${Date.now()}.jpg`;
   const tokenRes = await axios.post(`${SAAS_ORIGIN}/api/upload/direct-token`, {
     userId,
@@ -59,7 +55,7 @@ async function saveResultImageToSaas({
   });
   const token = await readJsonResponse(tokenRes);
 
-  // 3. PUT to OSS using token headers
+  // 2. PUT to OSS
   const uploadRes = await axios.put(token.uploadUrl, imageBuffer, {
     headers: { 
       ...(token.headers || {}), 
@@ -71,14 +67,35 @@ async function saveResultImageToSaas({
     throw new Error(`OSS 上传失败: ${uploadRes.status}`);
   }
 
-  // 4. Commit
+  return {
+    objectKey: token.objectKey,
+    fileSize: imageBuffer.byteLength,
+    mimeType,
+    fileName: finalFileName
+  };
+}
+
+async function commitSaasResult({
+  userId,
+  toolId,
+  pendingUpload
+}: {
+  userId: string,
+  toolId: string,
+  pendingUpload: any
+}) {
+  // 1. Consume points
+  const consumeRes = await axios.post(`${SAAS_ORIGIN}/api/tool/consume`, { userId, toolId });
+  await readJsonResponse(consumeRes);
+
+  // 2. Commit
   const commitRes = await axios.post(`${SAAS_ORIGIN}/api/upload/commit`, {
     userId,
     toolId,
     source: 'result',
-    objectKey: token.objectKey,
-    fileName: finalFileName,
-    fileSize: imageBuffer.byteLength
+    objectKey: pendingUpload.objectKey,
+    fileName: pendingUpload.fileName,
+    fileSize: pendingUpload.fileSize
   });
   const commitResult = await readJsonResponse(commitRes);
   if (!commitResult.savedToRecords) {
@@ -350,10 +367,30 @@ GENERAL CONSTRAINTS:
 
       const resultBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
 
+      // Upload result to OSS (Stage 1 of save process)
+      let pendingUpload = null;
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        try {
+          const uploadStart = Date.now();
+          pendingUpload = await uploadToOssOnly({
+            userId,
+            toolId,
+            imageBuffer,
+            mimeType: generatedMimeType,
+            fileName: `beautified-${Date.now()}.jpg`
+          });
+          console.log(`[Beautify] Background OSS upload took ${Date.now() - uploadStart}ms`);
+        } catch (uploadError: any) {
+          console.error('[Beautify] Background OSS upload failed:', uploadError.message);
+          // Don't block response
+        }
+      }
+
       console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
       return res.json({ 
         success: true, 
-        generatedImage: resultBase64
+        generatedImage: resultBase64,
+        pendingUpload
       });
     } catch (error: any) {
       console.error(error);
@@ -363,27 +400,21 @@ GENERAL CONSTRAINTS:
 
   app.post("/api/save-result", async (req, res) => {
     try {
-      const { generatedImage, userId, toolId } = req.body;
-      if (!generatedImage || !userId || !toolId) {
-        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      const { pendingUpload, userId, toolId } = req.body;
+      if (!pendingUpload || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: '缺少保存所需的必要元数据' });
       }
 
-      const base64Data = generatedImage.replace(/^data:image\/\w+;base64,/, "");
-      const imageBuffer = Buffer.from(base64Data, 'base64');
-      const mimeType = generatedImage.match(/^data:([^;]+);/)?.[1] || 'image/jpeg';
-
-      const saasImage = await saveResultImageToSaas({
+      const saasImage = await commitSaasResult({
         userId,
         toolId,
-        imageBuffer,
-        mimeType,
-        fileName: `beautified-${Date.now()}.jpg`
+        pendingUpload
       });
 
       res.json({ success: true, image: saasImage });
     } catch (error: any) {
-      console.error('[SaveResult] failed:', error.message);
-      res.status(500).json({ success: false, error: error.message || '图片保存失败' });
+      console.error('[SaveResult] commit failed:', error.message);
+      res.status(500).json({ success: false, error: error.message || '图片持久化失败' });
     }
   });
 

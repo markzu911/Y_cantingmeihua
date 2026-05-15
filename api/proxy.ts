@@ -38,25 +38,10 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
   const url = req.url || '';
   const SAAS_ORIGIN = process.env.SAAS_ORIGIN || 'http://aibigtree.com';
 
-  // Helper to save result image to SaaS following the standard flow
-  const saveResultImageToSaas = async (userId: string, toolId: string, imageBuffer: Buffer, mimeType: string = 'image/png') => {
-    if (userId === 'null' || userId === 'undefined' || !userId) throw new Error('Invalid User ID');
-    if (toolId === 'null' || toolId === 'undefined' || !toolId) throw new Error('Invalid Tool ID');
-
-    // 1. Consume points (Confirmed success)
-    const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, toolId })
-    });
-    const consumeText = await consumeRes.text();
-    let consume;
-    try { consume = JSON.parse(consumeText); } catch { consume = { success: false, error: consumeText }; }
-    
-    if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
-
-    // 2. Direct Token
+  // Helper to upload image to OSS without committing/consuming
+  const uploadToOssOnly = async (userId: string, toolId: string, imageBuffer: Buffer, mimeType: string) => {
     const finalFileName = `beautified-${Date.now()}.jpg`;
+    // 1. Get Direct Token
     const tokenRes = await fetch(`${SAAS_ORIGIN}/api/upload/direct-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -72,7 +57,7 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     const token = await tokenRes.json();
     if (!token.success) throw new Error(token.error || '获取上传凭证失败');
 
-    // 3. PUT to OSS using token headers
+    // 2. PUT to OSS
     const uploadRes = await fetch(token.uploadUrl, {
       method: token.method || 'PUT',
       headers: {
@@ -83,7 +68,26 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
     });
     if (!uploadRes.ok) throw new Error(`OSS 上传失败: ${uploadRes.status}`);
 
-    // 4. Commit
+    return {
+      objectKey: token.objectKey,
+      fileSize: imageBuffer.length,
+      mimeType,
+      fileName: finalFileName
+    };
+  };
+
+  // Helper to complete the SaaS save (Consume + Commit)
+  const commitSaasResult = async (userId: string, toolId: string, pendingUpload: any) => {
+    // 1. Consume points
+    const consumeRes = await fetch(`${SAAS_ORIGIN}/api/tool/consume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, toolId })
+    });
+    const consume = await consumeRes.json();
+    if (!consume.success) throw new Error(consume.error || consume.message || '积分扣费失败');
+
+    // 2. Commit
     const commitRes = await fetch(`${SAAS_ORIGIN}/api/upload/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -91,9 +95,9 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
         userId,
         toolId,
         source: 'result',
-        objectKey: token.objectKey,
-        fileName: finalFileName,
-        fileSize: imageBuffer.length
+        objectKey: pendingUpload.objectKey,
+        fileName: pendingUpload.fileName,
+        fileSize: pendingUpload.fileSize
       })
     });
     const commitResult = await commitRes.json();
@@ -304,30 +308,41 @@ const handler = async (req: VercelRequest, res: VercelResponse) => {
 
       const finalImageBase64 = `data:${generatedMimeType};base64,${imageBuffer.toString('base64')}`;
       
+      // Upload result to OSS (Stage 1 of save process)
+      let pendingUpload = null;
+      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+        try {
+          const uploadStart = Date.now();
+          pendingUpload = await uploadToOssOnly(userId, toolId, imageBuffer, generatedMimeType);
+          console.log(`[Beautify] OSS upload took ${Date.now() - uploadStart}ms`);
+        } catch (uploadError: any) {
+          console.error('[Beautify] Background OSS upload failed:', uploadError.message);
+          // We don't fail the whole beautify request if background upload fails, 
+          // because the user already has the generated image base64 for preview.
+        }
+      }
+
       console.log(`[Beautify] Total processing time: ${Date.now() - startTime}ms`);
       return res.status(200).json({ 
         success: true, 
-        generatedImage: finalImageBase64
+        generatedImage: finalImageBase64,
+        pendingUpload
       });
     }
 
-    // 4. Save Result to SaaS (Dedicated Endpoint)
+    // 4. Save Result (Stage 2: Consume + Commit)
     if (url.includes('/api/save-result')) {
-      const { generatedImage, userId, toolId } = req.body;
-      if (!generatedImage || !userId || !toolId) {
-        return res.status(400).json({ success: false, error: '缺少必要参数' });
+      const { pendingUpload, userId, toolId } = req.body;
+      if (!pendingUpload || !userId || !toolId) {
+        return res.status(400).json({ success: false, error: '缺少保存所需的必要元数据' });
       }
 
       try {
-        const base64Data = generatedImage.replace(/^data:image\/\w+;base64,/, "");
-        const imageBuffer = Buffer.from(base64Data, 'base64');
-        const mimeType = generatedImage.split(';')[0].split(':')[1] || 'image/jpeg';
-        
-        const saasImage = await saveResultImageToSaas(userId, toolId, imageBuffer, mimeType);
+        const saasImage = await commitSaasResult(userId, toolId, pendingUpload);
         return res.status(200).json({ success: true, image: saasImage });
       } catch (saveError: any) {
-        console.error('[SaveResult] failed:', saveError.message);
-        return res.status(500).json({ success: false, error: saveError.message || '图片保存失败' });
+        console.error('[SaveResult] commit failed:', saveError.message);
+        return res.status(500).json({ success: false, error: saveError.message || '图片持久化失败' });
       }
     }
 

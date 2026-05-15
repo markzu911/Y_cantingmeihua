@@ -65,7 +65,17 @@ export async function beautifyRestaurantImage(
   userId?: string | null,
   toolId?: string | null,
   imageUrl?: string | null
-): Promise<{ success: boolean; generatedImage: string; image?: SaasImage }> {
+): Promise<{ 
+  success: boolean; 
+  generatedImage: string; 
+  image?: SaasImage;
+  pendingUpload?: {
+    objectKey: string;
+    fileSize: number;
+    mimeType: string;
+    fileName: string;
+  }
+}> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
