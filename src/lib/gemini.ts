@@ -70,7 +70,7 @@ export async function beautifyRestaurantImage(
   const timeoutId = setTimeout(() => controller.abort(), 300000); // 300s timeout
 
   try {
-    const response = await fetch("/api/beautify", {
+    const startResponse = await fetch("/api/beautify/start", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -88,13 +88,40 @@ export async function beautifyRestaurantImage(
       signal: controller.signal,
     });
 
-    const result = await response.json().catch(() => ({ success: false, error: "Network error or timeout" }));
+    const startResult = await startResponse.json().catch(() => ({ success: false, error: "Network error starting job" }));
 
-    if (!response.ok || result.success === false) {
-      throw new Error(result.error || "Failed to beautify image");
+    if (!startResponse.ok || startResult.success === false) {
+      throw new Error(startResult.error || "Failed to start beautify job");
     }
 
-    return result;
+    const { jobId } = startResult;
+
+    // Polling loop
+    while (true) {
+      if (controller.signal.aborted) {
+        throw new Error("Job timed out");
+      }
+      
+      await new Promise(r => setTimeout(r, 2000)); // Poll every 2 seconds
+
+      const statusRes = await fetch(`/api/beautify/status/${jobId}`, {
+        signal: controller.signal
+      });
+
+      if (!statusRes.ok) {
+        continue; // possibly temporary network error, keep trying
+      }
+
+      const statusResult = await statusRes.json();
+
+      if (statusResult.status === "completed") {
+        return { success: true, generatedImage: statusResult.generatedImage };
+      }
+      if (statusResult.status === "failed") {
+        throw new Error(statusResult.error || "Generation failed in background");
+      }
+      // if processing, continue loop
+    }
   } finally {
     clearTimeout(timeoutId);
   }

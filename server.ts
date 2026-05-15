@@ -283,58 +283,58 @@ async function startServer() {
     }
   });
 
-  app.post("/api/beautify", async (req, res) => {
-    // Send headers immediately and keep connection alive with whitespace
-    res.setHeader('Content-Type', 'application/json');
+  // Setup polling for long running requests
+  const beautifyJobs = new Map<string, any>();
+
+  app.post("/api/beautify/start", async (req, res) => {
+    const jobId = Math.random().toString(36).substring(2, 15);
+    beautifyJobs.set(jobId, { status: "processing", startedAt: Date.now() });
     
-    // Nginx will drop connection if no data is sent for 60s. 
-    // We send spaces every 10 seconds to keep the connection alive.
-    // Leading/trailing spaces are safely ignored by JSON.parse() on the client.
-    const heartbeat = setInterval(() => {
-      res.write(' '.repeat(1024));
-    }, 10000);
+    // Return immediately to avoid 504 Gateway Timeout
+    res.json({ success: true, jobId });
 
-    const totalStart = Date.now();
-    try {
-      const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
-      
-      // Step 2: Verify points if SaaS info is provided
-      if (userId && toolId && userId !== 'null' && toolId !== 'null') {
-        const verifyStart = Date.now();
-        try {
-          await verifyBeforeGenerate({ userId, toolId });
-          console.log(`[Beautify] Verify points took ${Date.now() - verifyStart}ms`);
-        } catch (error: any) {
-          clearInterval(heartbeat);
-          res.write(JSON.stringify({ success: false, error: error.message }));
-          return res.end();
+    // Execute heavy task in the background
+    (async () => {
+      const totalStart = Date.now();
+      try {
+        const { base64Image, imageUrl, mimeType, analysis, options, allowAdditions, userId, toolId } = req.body;
+        
+        // Step 2: Verify points if SaaS info is provided
+        if (userId && toolId && userId !== 'null' && toolId !== 'null') {
+          const verifyStart = Date.now();
+          try {
+            await verifyBeforeGenerate({ userId, toolId });
+            console.log(`[Beautify Job ${jobId}] Verify points took ${Date.now() - verifyStart}ms`);
+          } catch (error: any) {
+            beautifyJobs.set(jobId, { status: "failed", error: error.message });
+            return;
+          }
         }
-      }
 
-      const getOrigStart = Date.now();
-      let dataToUse = base64Image;
-      let mimeToUse = mimeType;
+        const getOrigStart = Date.now();
+        let dataToUse = base64Image;
+        let mimeToUse = mimeType;
 
-      if (imageUrl && !base64Image) {
-        const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-        dataToUse = Buffer.from(fetchRes.data).toString('base64');
-        mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
-        console.log(`[Beautify] Fetch original image took ${Date.now() - getOrigStart}ms`);
-      }
+        if (imageUrl && !base64Image) {
+          const fetchRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+          dataToUse = Buffer.from(fetchRes.data).toString('base64');
+          mimeToUse = fetchRes.headers['content-type'] || 'image/jpeg';
+          console.log(`[Beautify Job ${jobId}] Fetch original image took ${Date.now() - getOrigStart}ms`);
+        }
 
-      const geminiStart = Date.now();
-      const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-      
-      const additionsToApply = allowAdditions && analysis.recommendedAdditions
-        ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
-        : [];
+        const geminiStart = Date.now();
+        const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+        
+        const additionsToApply = allowAdditions && analysis.recommendedAdditions
+          ? analysis.recommendedAdditions.filter((a: any) => a.enabled).map((a: any) => a.item)
+          : [];
 
-      const additionRules = additionsToApply.length > 0
-        ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
-        : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
+        const additionRules = additionsToApply.length > 0
+          ? `NEW ADDITIONS (CRITICAL): You MUST add the following items naturally into the scene:\n${additionsToApply.map((item: any, i: number) => `${i + 1}. ${item}`).join('\n')}\nDo not add anything else besides these.`
+          : `CRITICAL: DO NOT add any new objects, decorations, plants, or items that did not exist in the original image.`;
 
-      const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
-      
+        const prompt = `You are a top-tier professional photo editor and interior designer. Your task is to renovate and beautify this restaurant image strictly according to the user's specific requests.
+        
 CRITICAL INSTRUCTION: You MUST execute EVERY SINGLE ONE of the following beautification requests. Do not skip any.
 USER'S BEAUTIFICATION POINTS:
 ${analysis.beautifyPoints.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}
@@ -352,62 +352,71 @@ GENERAL CONSTRAINTS:
 - Keep the main furniture (tables, chairs, kitchen equipment) in their original positions, but you can clean, repair, and polish them as requested.
 - Make the final image look highly realistic, spotless, and premium.`;
 
-      const beautifyPromise = ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: dataToUse,
-                mimeType: mimeToUse,
+        const beautifyPromise = ai.models.generateContent({
+          model: "gemini-3.1-flash-image-preview",
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  data: dataToUse,
+                  mimeType: mimeToUse,
+                },
               },
-            },
-            {
-              text: prompt,
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: options.ratio,
-            imageSize: options.resolution,
+              {
+                text: prompt,
+              },
+            ],
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: options.ratio,
+              imageSize: options.resolution,
+            }
+          }
+        });
+
+        const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
+        console.log(`[Beautify Job ${jobId}] Gemini generation took ${Date.now() - geminiStart}ms`);
+
+        let generatedBase64 = null;
+        let generatedMimeType = "image/png";
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData) {
+            generatedBase64 = part.inlineData.data;
+            generatedMimeType = part.inlineData.mimeType || "image/png";
+            break;
           }
         }
-      });
 
-      const response = await withTimeout(beautifyPromise, 300000, "AI 处理超时(300s)");
-      console.log(`[Beautify] Gemini generation took ${Date.now() - geminiStart}ms`);
-
-      let generatedBase64 = null;
-      let generatedMimeType = "image/png";
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          generatedBase64 = part.inlineData.data;
-          generatedMimeType = part.inlineData.mimeType || "image/png";
-          break;
+        if (!generatedBase64) {
+          throw new Error("No image generated by AI");
         }
-      }
 
-      if (!generatedBase64) {
-        throw new Error("No image generated by AI");
-      }
+        console.log(`[Beautify Job ${jobId}] Total processing time: ${Date.now() - totalStart}ms`);
+        beautifyJobs.set(jobId, { 
+          status: "completed", 
+          generatedImage: `data:${generatedMimeType};base64,${generatedBase64}` 
+        });
 
-      console.log(`[Beautify] Total processing time: ${Date.now() - totalStart}ms`);
-      
-      clearInterval(heartbeat);
-      res.write(JSON.stringify({ 
-        success: true, 
-        generatedImage: `data:${generatedMimeType};base64,${generatedBase64}`
-      }));
-      res.end();
-    } catch (error: any) {
-      clearInterval(heartbeat);
-      console.error(error);
-      if (!res.headersSent) {
-        res.status(500);
+      } catch (error: any) {
+        console.error(`[Beautify Job ${jobId}] Error:`, error);
+        beautifyJobs.set(jobId, { status: "failed", error: error.message });
       }
-      res.write(JSON.stringify({ success: false, error: error.message }));
-      res.end();
+    })();
+  });
+
+  app.get("/api/beautify/status/:jobId", (req, res) => {
+    const job = beautifyJobs.get(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: "Job not found" });
+    }
+    
+    // Clean up if completed or failed so it doesn't leak memory
+    if (job.status === "completed" || job.status === "failed") {
+      res.json({ success: true, ...job });
+      beautifyJobs.delete(req.params.jobId);
+    } else {
+      res.json({ success: true, ...job });
     }
   });
 
