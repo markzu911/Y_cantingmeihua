@@ -143,7 +143,7 @@ ALL OUTPUT MUST BE IN CHINESE (简体中文). Return JSON.`,
 
   app.post("/api/beautify", async (req, res) => {
     try {
-      const { base64Image, mimeType, analysis, options, allowAdditions } = req.body;
+      const { base64Image, mimeType, analysis, options, allowAdditions, customRequirements } = req.body;
       const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
       
       const additionsToApply = allowAdditions && analysis.recommendedAdditions
@@ -169,10 +169,15 @@ MANDATORY BASELINE & BEAUTIFICATION POINTS:
 5. USER'S SPECIFIC POINTS:
 ${analysis.beautifyPoints.map((p: string, i: number) => `   - ${p}`).join('\n')}
 
+USER'S ADDITIONAL DIALOGUE CUSTOM REQUIREMENTS (CRITICAL OVERRIDE - MUST FULLY COMPLY AND APPLY):
+${customRequirements && customRequirements.length > 0
+  ? customRequirements.map((r: string, i: number) => `   - ${r}`).join('\n')
+  : `   - None (Follow general professional guidelines)`}
+
 DECORATION RULES:
-${allowAdditions && additionsToApply.length > 0
-  ? `The user ENABLED decorations. You MUST add ONLY the following checked items: \n${additionsToApply.join(', ')}. DO NOT add any other extra items (no extra plants, no extra lamps, no extra ornaments).`
-  : `The user DISABLED decorations. DO NOT add ANY new decorations, new plants, new lamps, or new ornaments. Keep it purely renovation.`}
+${allowAdditions && (additionsToApply.length > 0 || (customRequirements && customRequirements.length > 0))
+  ? `The user ENABLED decorations. You MUST add the checked recommended items: \n${additionsToApply.join(', ')} \nAND satisfy the user's custom requirements. DO NOT add other unrequested items.`
+  : `The user DISABLED decorations. DO NOT add ANY new decorations, new plants, or ornaments, UNLESS explicitly requested in the USER'S ADDITIONAL DIALOGUE CUSTOM REQUIREMENTS above.`}
 
 STYLE RULES:
 - Output must be highly realistic and natural, like a professional interior photography.

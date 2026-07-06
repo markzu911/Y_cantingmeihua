@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins } from 'lucide-react';
+import { Upload, Image as ImageIcon, Wand2, Download, Loader2, CheckCircle2, AlertCircle, X, Key, Plus, Trash2, Coins, MessageSquare, Settings, Sparkles, Send, Check, RotateCcw, Bot, User } from 'lucide-react';
 import { analyzeRestaurantImage, beautifyRestaurantImage, AnalysisResult } from './lib/gemini';
 
 // Add type definition for window.aistudio
@@ -23,6 +23,15 @@ interface SaasToolInfo {
   integral: number;
 }
 
+interface ChatMessage {
+  id: string;
+  sender: 'ai' | 'user';
+  text: string;
+  type?: 'text' | 'image-upload' | 'analysis-result' | 'options-lighting' | 'options-decor' | 'decor-checkboxes' | 'beautify-trigger' | 'loading' | 'result-card' | 'error';
+  image?: string;
+  meta?: any;
+}
+
 export default function App() {
   const [hasKey, setHasKey] = useState(true);
   const [originalImage, setOriginalImage] = useState<{ base64: string; mimeType: string; url: string } | null>(null);
@@ -44,6 +53,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  // Dual Mode State
+  const [mode, setMode] = useState<'landing' | 'agent' | 'expert'>('landing');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [customRequirements, setCustomRequirements] = useState<string[]>([]);
+  const [inputMessage, setInputMessage] = useState('');
+
   // SaaS Integration State
   const [userId, setUserId] = useState<string | null>(null);
   const [toolId, setToolId] = useState<string | null>(null);
@@ -51,6 +66,47 @@ export default function App() {
   const [toolInfo, setToolInfo] = useState<SaasToolInfo | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Initialize Welcome Message
+  useEffect(() => {
+    if (messages.length === 0) {
+      setMessages([
+        {
+          id: 'welcome',
+          sender: 'ai',
+          text: '您好！我是您的智能餐厅美化智能体。我可以帮您快速对餐厅进行高清、真实的清洁提亮与软装定制。首先，请上传您的餐厅原始照片 📸。',
+          type: 'image-upload'
+        }
+      ]);
+    }
+  }, []);
+
+  // Sync when mode switches to Agent Mode
+  useEffect(() => {
+    if (mode === 'agent' && originalImage && messages.length <= 1) {
+      setMessages([
+        {
+          id: 'welcome',
+          sender: 'ai',
+          text: '您好！我是您的智能餐厅美化智能体。我可以帮您快速对餐厅进行高清、真实的清洁提亮与软装定制。首先，请上传您的餐厅原始照片 📸。',
+          type: 'image-upload'
+        },
+        {
+          id: 'sync-uploaded-' + Date.now(),
+          sender: 'user',
+          text: '已导入餐厅照片 📸',
+          image: originalImage.url
+        }
+      ]);
+      autoAnalyzeInChat(originalImage.base64, originalImage.mimeType);
+    }
+  }, [mode]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   // Handle postMessage for SAAS_INIT
   useEffect(() => {
@@ -157,10 +213,488 @@ export default function App() {
         setHistory([]);
         setError(null);
         setActiveTab('analysis');
+
+        if (mode === 'agent') {
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'user-uploaded-' + Date.now(),
+              sender: 'user',
+              text: '已上传餐厅照片 📸',
+              image: compressedDataUrl
+            }
+          ]);
+          autoAnalyzeInChat(base64, 'image/jpeg');
+        }
       };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
+  };
+
+  const autoAnalyzeInChat = async (base64: string, mimeType: string) => {
+    const analysisLoadingId = 'ai-analyzing-' + Date.now();
+    setMessages(prev => [
+      ...prev,
+      {
+        id: analysisLoadingId,
+        sender: 'ai',
+        text: '正在智能审视与分析您的餐厅空间，请稍候... 🔍',
+        type: 'loading'
+      }
+    ]);
+
+    if (userId && toolId) {
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
+            {
+              id: 'err-' + Date.now(),
+              sender: 'ai',
+              text: `❌ 积分不足，无法执行该操作：${verifyData.message || '需要更多积分'}`,
+              type: 'error'
+            }
+          ]));
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    }
+
+    try {
+      const result = await analyzeRestaurantImage(base64, mimeType);
+      setAnalysisResult(result);
+      if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
+        setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
+      }
+
+      setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
+        {
+          id: 'analysis-res-' + Date.now(),
+          sender: 'ai',
+          text: `分析完成！我发现了以下可以优化的地方：`,
+          type: 'analysis-result',
+          meta: result
+        },
+        {
+          id: 'lighting-choice-' + Date.now(),
+          sender: 'ai',
+          text: `请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${result.recommendedLighting})`,
+          type: 'options-lighting'
+        }
+      ]));
+    } catch (err: any) {
+      setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
+        {
+          id: 'err-' + Date.now(),
+          sender: 'ai',
+          text: `❌ 空间分析失败：${err.message || '请重试'}`,
+          type: 'error'
+        }
+      ]));
+    }
+  };
+
+  const handleSelectLightingInChat = (lighting: string) => {
+    setOptions(prev => ({ ...prev, lighting }));
+    setMessages(prev => [
+      ...prev,
+      {
+        id: 'user-lighting-' + Date.now(),
+        sender: 'user',
+        text: `艺术基调：${lighting}`
+      },
+      {
+        id: 'ai-decor-ask-' + Date.now(),
+        sender: 'ai',
+        text: `已确认艺术基调为「${lighting}」！接下来，是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植（完全在推荐清单内，绝不无中生有其他多余物件）。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
+        type: 'options-decor'
+      }
+    ]);
+  };
+
+  const handleSelectDecorInChat = (enabled: boolean) => {
+    setAllowAdditions(enabled);
+    if (enabled) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: 'user-decor-' + Date.now(),
+          sender: 'user',
+          text: '开启智能软装推荐'
+        },
+        {
+          id: 'ai-decor-items-' + Date.now(),
+          sender: 'ai',
+          text: '为您推荐了以下几项软装升级建议，您可以自由点击启用或停用：',
+          type: 'decor-checkboxes'
+        }
+      ]);
+    } else {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: 'user-decor-' + Date.now(),
+          sender: 'user',
+          text: '不开启软装，仅做清洁提亮'
+        },
+        {
+          id: 'ai-beautify-ready-' + Date.now(),
+          sender: 'ai',
+          text: '好的，我们将保持原有的物件陈设，纯净清洗除垢，恢复材质的高级质感。请确认以下美化逻辑无误，点击开始一键美化。',
+          type: 'beautify-trigger'
+        }
+      ]);
+    }
+  };
+
+  const handleBeautifyInChat = async () => {
+    if (!originalImage || !analysisResult) return;
+
+    const beautifyLoadingId = 'ai-beautifying-' + Date.now();
+    setMessages(prev => [
+      ...prev,
+      {
+        id: 'user-start-' + Date.now(),
+        sender: 'user',
+        text: '开始一键美化 🚀'
+      },
+      {
+        id: beautifyLoadingId,
+        sender: 'ai',
+        text: '正在用 AI 画笔重绘您的餐厅，预计耗时 30-40 秒，请稍候... 🎨',
+        type: 'loading'
+      }
+    ]);
+
+    if (userId && toolId) {
+      try {
+        const verifyRes = await fetch('/api/tool/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          setMessages(prev => prev.filter(m => m.id !== beautifyLoadingId).concat([
+            {
+              id: 'err-' + Date.now(),
+              sender: 'ai',
+              text: `❌ 积分不足，无法执行该操作：${verifyData.message || '需要更多积分'}`,
+              type: 'error'
+            }
+          ]));
+          return;
+        }
+      } catch (err) {
+        console.error('Verify failed:', err);
+      }
+    }
+
+    try {
+      const resultImageBase64 = await beautifyRestaurantImage(
+        originalImage.base64,
+        originalImage.mimeType,
+        analysisResult,
+        options,
+        allowAdditions,
+        customRequirements
+      );
+
+      setBeautifiedImage(resultImageBase64);
+      setHistory(prev => [resultImageBase64, ...prev]);
+
+      let finalImageUrl = resultImageBase64;
+
+      if (userId && toolId) {
+        const consumeRes = await fetch('/api/tool/consume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, toolId })
+        });
+        const consumeData = await consumeRes.json();
+        
+        if (consumeData.success) {
+          if (consumeData.data) {
+            setUserInfo(prev => prev ? { ...prev, integral: consumeData.data.currentIntegral } : null);
+          }
+
+          const base64Data = resultImageBase64.replace(/^data:image\/\w+;base64,/, '');
+          const binaryString = window.atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          const fileSize = bytes.byteLength;
+          const blob = new Blob([bytes], { type: 'image/png' });
+
+          const tokenRes = await fetch('/api/upload/direct-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, toolId, source: 'result', mimeType: 'image/png', fileName: 'result.png', fileSize })
+          });
+          const token = await tokenRes.json();
+
+          if (token.success) {
+            const uploadRes = await fetch(token.uploadUrl, {
+              method: token.method || 'PUT',
+              headers: token.headers,
+              body: blob
+            });
+
+            if (uploadRes.ok) {
+              const commitRes = await fetch('/api/upload/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userId,
+                  toolId,
+                  source: 'result',
+                  objectKey: token.objectKey,
+                  fileSize
+                })
+              });
+              const commit = await commitRes.json();
+              if (commit.savedToRecords && commit.image?.url) {
+                finalImageUrl = commit.image.url;
+                setBeautifiedImage(commit.image.url);
+                setHistory(prev => {
+                  const newHistory = [...prev];
+                  newHistory[0] = commit.image.url;
+                  return newHistory;
+                });
+              }
+            }
+          }
+        }
+      }
+
+      setMessages(prev => prev.filter(m => m.id !== beautifyLoadingId).concat([
+        {
+          id: 'beautify-res-' + Date.now(),
+          sender: 'ai',
+          text: '您的餐厅美化图已成功渲染完成！✨ 整体色调得到了重塑，地面与墙体破损、暗沉、污渍等均已完全修复并提升质感，台面整理也已洁净有序。您觉得效果满意吗？',
+          type: 'result-card',
+          image: finalImageUrl
+        }
+      ]));
+
+    } catch (err: any) {
+      const errorMsg = err.message || '';
+      let displayedError = '美化重绘失败，请稍后重试。';
+      if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('Requested entity was not found')) {
+        setHasKey(false);
+        displayedError = 'API Key 权限不足或未找到。请重新选择一个已启用计费项目的 API Key。';
+      }
+      setMessages(prev => prev.filter(m => m.id !== beautifyLoadingId).concat([
+        {
+          id: 'err-' + Date.now(),
+          sender: 'ai',
+          text: `❌ 渲染遇到问题：${displayedError}`,
+          type: 'error'
+        }
+      ]));
+    }
+  };
+
+  const handleRestartInChat = () => {
+    setOriginalImage(null);
+    setAnalysisResult(null);
+    setBeautifiedImage(null);
+    setHistory([]);
+    setCustomRequirements([]);
+    setError(null);
+    setMessages([
+      {
+        id: 'welcome-' + Date.now(),
+        sender: 'ai',
+        text: '您好！我是您的智能餐厅美化智能体。我可以帮您快速对餐厅进行高清、真实的清洁提亮与软装定制。首先，请上传您的餐厅原始照片 📸。',
+        type: 'image-upload'
+      }
+    ]);
+  };
+
+  const handleSendMessage = (text: string) => {
+    if (!text.trim()) return;
+    
+    const userMsgId = 'user-text-' + Date.now();
+    setMessages(prev => [
+      ...prev,
+      {
+        id: userMsgId,
+        sender: 'user',
+        text
+      }
+    ]);
+    setInputMessage('');
+
+    setTimeout(() => {
+      // Parse parameters or custom requirements
+      let parsedRatio = '';
+      let parsedResolution = '';
+      let parsedLighting = '';
+      let parsedDecor: boolean | null = null;
+      let extraReq = '';
+
+      const lowerText = text.toLowerCase();
+      const feedback: string[] = [];
+
+      // 1. Ratio
+      if (lowerText.includes('16:9') || lowerText.includes('16比9')) {
+        parsedRatio = '16:9';
+        feedback.push('📐 画面比例已设为：16:9 (横屏，适合宽敞全景)');
+      } else if (lowerText.includes('4:3') || lowerText.includes('4比3')) {
+        parsedRatio = '4:3';
+        feedback.push('📐 画面比例已设为：4:3 (标准画幅)');
+      } else if (lowerText.includes('3:4') || lowerText.includes('3比4')) {
+        parsedRatio = '3:4';
+        feedback.push('📐 画面比例已设为：3:4 (竖屏画幅)');
+      } else if (lowerText.includes('1:1') || lowerText.includes('1比1') || lowerText.includes('正方形')) {
+        parsedRatio = '1:1';
+        feedback.push('📐 画面比例已设为：1:1 (正方形，聚焦餐桌主体)');
+      } else if (lowerText.includes('9:16') || lowerText.includes('9比16')) {
+        parsedRatio = '9:16';
+        feedback.push('📐 画面比例已设为：9:16 (手机竖屏，适合小红书/分享)');
+      }
+
+      // 2. Resolution
+      if (lowerText.includes('2k') || lowerText.includes('高清') || lowerText.includes('超清') || lowerText.includes('高分辨率')) {
+        parsedResolution = '2K';
+        feedback.push('💎 渲染分辨率已设为：2K (极致画质，细节饱满)');
+      } else if (lowerText.includes('1k') || lowerText.includes('标清') || lowerText.includes('标准分辨率')) {
+        parsedResolution = '1K';
+        feedback.push('⚡ 渲染分辨率已设为：1K (标准画质，生成迅速)');
+      }
+
+      // 3. Lighting
+      if (lowerText.includes('暖色') || lowerText.includes('温馨') || lowerText.includes('暖光') || lowerText.includes('黄光') || lowerText.includes('暖调')) {
+        parsedLighting = '暖色调';
+        feedback.push('💡 艺术光影基调已设为：暖色调 (温馨舒适，宾至如归)');
+      } else if (lowerText.includes('清新') || lowerText.includes('浅色') || lowerText.includes('白光') || lowerText.includes('明亮') || lowerText.includes('冷光')) {
+        parsedLighting = '清新浅色';
+        feedback.push('💡 艺术光影基调已设为：清新浅色 (透亮清爽，洁净宜人)');
+      } else if (lowerText.includes('高端暗色') || lowerText.includes('暗色') || lowerText.includes('奢华') || lowerText.includes('雅致') || lowerText.includes('暗调') || lowerText.includes('高奢')) {
+        parsedLighting = '高端暗色';
+        feedback.push('💡 艺术光影基调已设为：高端暗色 (典雅深邃，质感非凡)');
+      }
+
+      // 4. Decor Additions
+      if (lowerText.includes('不开启软装') || lowerText.includes('不加配饰') || lowerText.includes('不加装饰') || lowerText.includes('纯净清洁') || lowerText.includes('仅清洁') || lowerText.includes('仅做清洁') || lowerText.includes('关闭软装') || lowerText.includes('不开启配饰') || lowerText.includes('关闭配饰')) {
+        parsedDecor = false;
+        feedback.push('🍃 装饰装潢：不额外增加新配饰，保持原格局仅进行材质修复与提亮');
+      } else if (lowerText.includes('开启软装') || lowerText.includes('加配饰') || lowerText.includes('开启配饰') || lowerText.includes('添加配饰') || lowerText.includes('添加软装')) {
+        parsedDecor = true;
+        feedback.push('🌸 装饰装潢：已开启智能空间配饰推荐点缀');
+      }
+
+      // Apply options changes if parsed
+      if (parsedRatio) setOptions(prev => ({ ...prev, ratio: parsedRatio }));
+      if (parsedResolution) setOptions(prev => ({ ...prev, resolution: parsedResolution }));
+      if (parsedLighting) setOptions(prev => ({ ...prev, lighting: parsedLighting }));
+      if (parsedDecor !== null) setAllowAdditions(parsedDecor);
+
+      // 5. If it's a descriptive custom requirement
+      const isJustKeyword = ['暖色调', '清新浅色', '高端暗色', '16:9', '4:3', '1:1', '3:4', '9:16', '1k', '2k', '开启软装', '关闭软装', '开启配饰', '关闭配饰'].some(kw => lowerText === kw);
+      if (!isJustKeyword && text.length >= 2) {
+        extraReq = text;
+        setCustomRequirements(prev => {
+          if (prev.includes(text)) return prev;
+          return [...prev, text];
+        });
+        feedback.push(`✏️ 特别美化要求已录入："${text}"`);
+      }
+
+      if (!originalImage) {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: 'ai-resp-' + Date.now(),
+            sender: 'ai',
+            text: '已收到您的指令，并成功更新设计预设！请先上传您的餐厅原始照片 📸 开启智能设计美化。点击下方「选择原图」按钮即可。',
+            type: 'image-upload'
+          }
+        ]);
+      } else if (!analysisResult) {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: 'ai-resp-' + Date.now(),
+            sender: 'ai',
+            text: '已收到您的特别指令，并已更新至设计指令集中！我已经收到您的照片了，正在为您开启智能分析。'
+          }
+        ]);
+      } else {
+        const lastAiMsg = [...messages].reverse().find(m => m.sender === 'ai');
+        
+        // If there were matched parameters/requirements
+        if (feedback.length > 0) {
+          const feedbackText = `收到！已为您成功解析并更新以下设计指令：\n${feedback.join('\n')}\n\n该设置已生效。您可以继续输入其他要求，或点击下方选项、按钮继续美化流程 👇`;
+          
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-param-feedback-' + Date.now(),
+              sender: 'ai',
+              text: feedbackText,
+              type: lastAiMsg?.type === 'options-lighting' ? 'options-lighting' : (lastAiMsg?.type === 'options-decor' ? 'options-decor' : 'text')
+            }
+          ]);
+        } else {
+          // If no specific parameter matched and was just conversational, fall back to guided flow
+          if (lastAiMsg?.type === 'options-lighting') {
+            if (lowerText.includes('暖') || lowerText.includes('黄') || lowerText.includes('温馨')) {
+              handleSelectLightingInChat('暖色调');
+            } else if (lowerText.includes('白') || lowerText.includes('清新') || lowerText.includes('亮')) {
+              handleSelectLightingInChat('清新浅色');
+            } else if (lowerText.includes('黑') || lowerText.includes('暗') || lowerText.includes('雅')) {
+              handleSelectLightingInChat('高端暗色');
+            } else {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-resp-' + Date.now(),
+                  sender: 'ai',
+                  text: `收到！您说：“${text}”。您可以点击下方选项来进行选择：`,
+                  type: 'options-lighting'
+                }
+              ]);
+            }
+          } else if (lastAiMsg?.type === 'options-decor') {
+            if (text.includes('开') || text.includes('要') || text.includes('是')) {
+              handleSelectDecorInChat(true);
+            } else if (text.includes('不') || text.includes('否') || text.includes('仅清洁')) {
+              handleSelectDecorInChat(false);
+            } else {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-resp-' + Date.now(),
+                  sender: 'ai',
+                  text: '收到！建议您直接点击下方按钮选择：是否开启「智能空间软装推荐」？',
+                  type: 'options-decor'
+                }
+              ]);
+            }
+          } else {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-resp-' + Date.now(),
+                sender: 'ai',
+                text: `收到您的消息！您的要求 “${text}” 已经记录。我们已将其融合到了后面的渲染重绘中。您可以点击对应的选项或直接开始一键美化。`
+              }
+            ]);
+          }
+        }
+      }
+    }, 800);
   };
 
   const handleAnalyze = async () => {
@@ -234,7 +768,8 @@ export default function App() {
         originalImage.mimeType,
         analysisResult,
         options,
-        allowAdditions
+        allowAdditions,
+        customRequirements
       );
 
       // Display immediately
@@ -404,14 +939,26 @@ export default function App() {
 
       <header className="bg-white/60 backdrop-blur-xl border-b border-[#EAE3DC] sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 sm:h-20 flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div className="bg-[#3D3935] p-1.5 sm:p-2 rounded-lg sm:rounded-xl shrink-0">
+          <div 
+            className="flex items-center gap-2 sm:gap-3 cursor-pointer group hover:opacity-85 transition-opacity"
+            onClick={() => setMode('landing')}
+          >
+            <div className="bg-[#3D3935] p-1.5 sm:p-2 rounded-lg sm:rounded-xl shrink-0 group-hover:scale-105 transition-transform duration-300">
               <Wand2 className="w-3.5 h-3.5 sm:w-5 sm:h-5 text-white" />
             </div>
             <h1 className="text-base sm:text-2xl font-serif font-semibold tracking-tight text-[#3D3935] truncate max-w-[150px] sm:max-w-none">餐厅一键美化</h1>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-6">
+            {mode !== 'landing' && (
+              <button
+                onClick={() => setMode('landing')}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#6B6661] hover:text-[#3D3935] bg-[#F2F0ED] hover:bg-[#EAE3DC] rounded-xl border border-[#EAE3DC] transition-all"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>返回主页</span>
+              </button>
+            )}
             {userInfo && (
               <div className="flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 sm:px-3 sm:py-1.5 bg-white/50 backdrop-blur-sm rounded-full border border-[#EAE3DC] shadow-sm">
                 <Coins className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#C18C5D]" />
@@ -423,14 +970,370 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-12 relative z-10">
-        {error && (
-          <div className="mb-6 sm:mb-8 p-4 sm:p-5 bg-red-50/70 backdrop-blur-sm border border-red-100 rounded-2xl sm:rounded-[2rem] flex items-start gap-3 sm:gap-4 text-red-800 shadow-sm animate-in fade-in slide-in-from-top-2">
-            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-600" />
-            <p className="text-xs sm:text-sm font-medium">{error}</p>
-          </div>
-        )}
+        {mode === 'landing' ? (
+          <div className="max-w-5xl mx-auto py-12 sm:py-20 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500">
+            {/* Badge */}
+            <div className="mb-6 bg-white px-3.5 py-1.5 text-xs text-[#6B6661] font-bold border border-[#EAE3DC] rounded-full inline-flex items-center gap-1.5 shadow-sm">
+              <span>🏠 餐厅美化智能助手 V4.0</span>
+            </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start">
+            {/* Heading */}
+            <h2 className="text-3xl sm:text-5xl font-serif font-semibold tracking-tight text-[#3D3935] text-center mt-2 max-w-3xl leading-tight">
+              开启您的 AI 餐厅美化之旅
+            </h2>
+
+            {/* Subheading */}
+            <p className="text-xs sm:text-sm text-[#9B9691] max-w-2xl mx-auto mt-5 text-center leading-relaxed">
+              无论您是希望得到贴心的智能设计助理引导，还是渴望在全功能的专业面板上精细调校，我们都为您提供了专属的使用方案。
+            </p>
+
+            {/* Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl mt-12 sm:mt-16">
+              {/* Agent Mode Card */}
+              <div className="bg-white/90 backdrop-blur-md rounded-3xl border border-[#EAE3DC] p-6 sm:p-8 flex flex-col justify-between shadow-[0_15px_40px_rgba(141,163,153,0.05)] hover:shadow-[0_20px_50px_rgba(141,163,153,0.1)] transition-all duration-300 h-full group">
+                <div className="space-y-6">
+                  {/* Icon */}
+                  <div className="w-12 h-12 rounded-2xl bg-[#E8EDE7] border border-[#D9E2D7] text-[#4A5D4F] flex items-center justify-center shadow-sm">
+                    <Sparkles className="w-6 h-6" />
+                  </div>
+                  {/* Title & Tag */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="text-lg sm:text-xl font-serif font-bold text-[#3D3935]">智能体模式</h3>
+                      <span className="text-[10px] bg-[#E8EDE7] text-[#4A5D4F] border border-[#D9E2D7] px-2.5 py-0.5 rounded-md font-bold tracking-wider font-sans whitespace-nowrap">推荐新手</span>
+                    </div>
+                    <p className="text-xs sm:text-sm text-[#9B9691] leading-relaxed">
+                      对话式交互，像和专业设计师聊天一样。AI 将一步步引导您选择餐厅照片、艺术光影、开启软装定制，直接在聊天框内返回生成效果。
+                    </p>
+                  </div>
+                </div>
+                {/* Button */}
+                <button
+                  onClick={() => setMode('agent')}
+                  className="w-full mt-8 py-3 bg-[#3D3935] hover:bg-black text-white font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2 shadow-sm transform group-hover:-translate-y-0.5 duration-200"
+                >
+                  <Bot className="w-4 h-4" />
+                  <span>开启智能对话引导</span>
+                </button>
+              </div>
+
+              {/* Expert Mode Card */}
+              <div className="bg-white/90 backdrop-blur-md rounded-3xl border border-[#EAE3DC] p-6 sm:p-8 flex flex-col justify-between shadow-[0_15px_40px_rgba(141,163,153,0.05)] hover:shadow-[0_20px_50px_rgba(141,163,153,0.1)] transition-all duration-300 h-full group">
+                <div className="space-y-6">
+                  {/* Icon */}
+                  <div className="w-12 h-12 rounded-2xl bg-[#F2F0ED] border border-[#EAE3DC] text-[#3D3935] flex items-center justify-center shadow-sm">
+                    <Settings className="w-6 h-6" />
+                  </div>
+                  {/* Title & Tag */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="text-lg sm:text-xl font-serif font-bold text-[#3D3935]">专家工作台</h3>
+                      <span className="text-[10px] bg-[#F2F0ED] text-[#6B6661] border border-[#EAE3DC] px-2.5 py-0.5 rounded-md font-bold tracking-wider font-sans whitespace-nowrap">高阶微调</span>
+                    </div>
+                    <p className="text-xs sm:text-sm text-[#9B9691] leading-relaxed">
+                      经典分步流程。提供高可控性的输出设置、画面比例调节，支持针对性细节美化、推荐配饰按需增减。
+                    </p>
+                  </div>
+                </div>
+                {/* Button */}
+                <button
+                  onClick={() => setMode('expert')}
+                  className="w-full mt-8 py-3 bg-[#F2F0ED] hover:bg-[#EAE3DC] text-[#3D3935] border border-[#EAE3DC] font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2 shadow-sm transform group-hover:-translate-y-0.5 duration-200"
+                >
+                  <Settings className="w-4 h-4" />
+                  <span>进入设计师工作台</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Mode Switcher */}
+            <div className="flex justify-center mb-8">
+              <div className="bg-[#F2F0ED] p-1.5 rounded-2xl flex items-center shadow-sm border border-[#EAE3DC]">
+                <button
+                  onClick={() => setMode('agent')}
+                  className={`flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-all duration-300 ${mode === 'agent' ? 'bg-[#3D3935] text-white shadow-md' : 'text-[#9B9691] hover:text-[#6B6661]'}`}
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>智能体模式 (Agent)</span>
+                </button>
+                <button
+                  onClick={() => setMode('expert')}
+                  className={`flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-all duration-300 ${mode === 'expert' ? 'bg-[#3D3935] text-white shadow-md' : 'text-[#9B9691] hover:text-[#6B6661]'}`}
+                >
+                  <Settings className="w-4 h-4" />
+                  <span>专家模式 (Expert)</span>
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <div className="mb-6 sm:mb-8 p-4 sm:p-5 bg-red-50/70 backdrop-blur-sm border border-red-100 rounded-2xl sm:rounded-[2rem] flex items-start gap-3 sm:gap-4 text-red-800 shadow-sm animate-in fade-in slide-in-from-top-2">
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-600" />
+                <p className="text-xs sm:text-sm font-medium">{error}</p>
+              </div>
+            )}
+
+            {mode === 'agent' ? (
+          <div className="max-w-4xl mx-auto flex flex-col bg-white/70 backdrop-blur-xl border border-[#EAE3DC] rounded-3xl overflow-hidden shadow-[0_20px_50px_rgba(141,163,153,0.06)] h-[680px]">
+            {/* Live Design Parameters & Custom Requirements Summary */}
+            <div className="bg-[#FBF9F6] border-b border-[#EAE3DC] px-4 py-2.5 sm:px-6 flex flex-wrap items-center justify-between gap-3 text-xs text-[#6B6661]">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                <span className="font-bold text-[#3D3935] flex items-center gap-1">🛠️ 当前设计预设：</span>
+                <span className="bg-white px-2 py-0.5 rounded-md border border-[#EAE3DC] font-medium">比例: {options.ratio}</span>
+                <span className="bg-white px-2 py-0.5 rounded-md border border-[#EAE3DC] font-medium">基调: {options.lighting}</span>
+                <span className="bg-white px-2 py-0.5 rounded-md border border-[#EAE3DC] font-medium">分辨率: {options.resolution}</span>
+                <span className="bg-white px-2 py-0.5 rounded-md border border-[#EAE3DC] font-medium">配饰: {allowAdditions ? '开启' : '关闭'}</span>
+              </div>
+              {customRequirements.length > 0 && (
+                <div className="flex items-center gap-2 max-w-full">
+                  <span className="font-bold text-[#4A5D4F] shrink-0">✏️ 已录入对话要求 ({customRequirements.length})：</span>
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 max-w-[200px] sm:max-w-xs">
+                    {customRequirements.map((req, idx) => (
+                      <span 
+                        key={idx} 
+                        className="bg-[#E8EDE7] text-[#4A5D4F] border border-[#D9E2D7] px-2 py-0.5 rounded-md font-medium text-[10px] whitespace-nowrap flex items-center gap-1"
+                      >
+                        <span className="truncate max-w-[80px]">{req}</span>
+                        <button 
+                          onClick={() => setCustomRequirements(prev => prev.filter((_, i) => i !== idx))}
+                          className="hover:text-red-500 font-bold ml-0.5"
+                          title="删除该要求"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Chat Messages */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scrollbar-thin scrollbar-thumb-[#EAE3DC] scrollbar-track-transparent">
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`flex items-start gap-3 sm:gap-4 ${msg.sender === 'user' ? 'flex-row-reverse' : ''} animate-in fade-in duration-300`}
+                >
+                  {/* Avatar */}
+                  <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 shadow-sm border ${msg.sender === 'user' ? 'bg-[#3D3935] border-[#3D3935] text-white' : 'bg-[#E8EDE7] border-[#D9E2D7] text-[#4A5D4F]'}`}>
+                    {msg.sender === 'user' ? <User className="w-4 h-4 sm:w-5 sm:h-5" /> : <Bot className="w-4 h-4 sm:w-5 sm:h-5" />}
+                  </div>
+
+                  {/* Bubble content */}
+                  <div className="max-w-[80%] space-y-2">
+                    <div className={`rounded-2xl px-4 py-3 sm:px-5 sm:py-3.5 text-xs sm:text-sm leading-relaxed shadow-sm border ${msg.sender === 'user' ? 'bg-[#3D3935] text-white border-[#3D3935] rounded-tr-none' : 'bg-white border-[#EAE3DC] text-[#3D3935] rounded-tl-none'}`}>
+                      {msg.text.split('\n').map((line, i) => <p key={i}>{line}</p>)}
+                      
+                      {/* Image Preview inside text */}
+                      {msg.image && (
+                        <div className="mt-3 rounded-xl overflow-hidden border border-[#EAE3DC] max-w-sm cursor-pointer" onClick={() => { if (msg.type !== 'image-upload') { setBeautifiedImage(msg.image); setIsModalOpen(true); } }}>
+                          <img src={msg.image} alt="Message attach" className="w-full max-h-48 object-cover" />
+                        </div>
+                      )}
+
+                      {/* Interactive block - Image Upload */}
+                      {msg.type === 'image-upload' && (
+                        <div className="mt-4">
+                          {!originalImage ? (
+                            <div
+                              onClick={() => fileInputRef.current?.click()}
+                              className="border border-dashed border-[#8DA399] rounded-xl p-6 flex flex-col items-center justify-center bg-[#FDFCFB]/80 hover:bg-[#F2F0ED]/30 transition-all cursor-pointer group animate-pulse"
+                            >
+                              <Upload className="w-6 h-6 text-[#8DA399] mb-2" />
+                              <span className="text-xs font-bold text-[#6B6661]">选择您想要美化的餐厅照片</span>
+                            </div>
+                          ) : (
+                            <div className="border border-[#E8EDE7] bg-[#E8EDE7]/30 rounded-xl p-3 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <ImageIcon className="w-4 h-4 text-[#8DA399]" />
+                                <span className="text-xs text-[#6B6661] font-semibold truncate max-w-[150px]">已上传原图</span>
+                              </div>
+                              <button
+                                onClick={handleRestartInChat}
+                                className="text-xs text-red-500 hover:text-red-600 transition-colors font-bold"
+                              >
+                                重新选择
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Interactive block - Analysis result */}
+                      {msg.type === 'analysis-result' && msg.meta && (
+                        <div className="mt-4 space-y-3 pt-3 border-t border-[#EAE3DC]/60 text-xs text-[#6B6661]">
+                          <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
+                            <span className="font-bold block text-[#3D3935] mb-1">📐 空间格局</span>
+                            {msg.meta.layout}
+                          </div>
+                          <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
+                            <span className="font-bold block text-[#3D3935] mb-1">🏺 空间风格</span>
+                            {msg.meta.style}
+                          </div>
+                          <div className="bg-[#E8EDE7]/60 p-3 rounded-lg border border-[#D9E2D7]">
+                            <span className="font-bold block text-[#4A5D4F] mb-1">💡 推荐光影逻辑</span>
+                            {msg.meta.lightingReason}
+                          </div>
+                          <div className="space-y-1.5">
+                            <span className="font-bold block text-[#3D3935] mt-2">✨ 空间核心美化方案：</span>
+                            {msg.meta.beautifyPoints.map((pt: string, idx: number) => (
+                              <div key={idx} className="flex items-center gap-1.5 bg-[#FDFCFB] px-2.5 py-1.5 rounded-lg border border-[#EAE3DC]/60">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-[#8DA399] shrink-0" />
+                                <span>{pt}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Lighting Options */}
+                      {msg.type === 'options-lighting' && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {['暖色调', '清新浅色', '高端暗色'].map((val) => (
+                            <button
+                              key={val}
+                              onClick={() => handleSelectLightingInChat(val)}
+                              className="px-4 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] rounded-xl text-xs font-bold transition-all transform active:scale-95 text-[#6B6661]"
+                            >
+                              {val}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Interactive block - Decor Yes/No Options */}
+                      {msg.type === 'options-decor' && (
+                        <div className="mt-4 flex gap-3">
+                          <button
+                            onClick={() => handleSelectDecorInChat(true)}
+                            className="flex-1 py-2 bg-[#8DA399] hover:bg-[#7C9288] text-white rounded-xl text-xs font-bold transition-all transform active:scale-95 flex items-center justify-center gap-1.5"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>启用软装推荐</span>
+                          </button>
+                          <button
+                            onClick={() => handleSelectDecorInChat(false)}
+                            className="flex-1 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] text-[#6B6661] rounded-xl text-xs font-bold transition-all transform active:scale-95 flex items-center justify-center gap-1.5"
+                          >
+                            <span>不启用，仅纯净清洁</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Decor checklists */}
+                      {msg.type === 'decor-checkboxes' && analysisResult?.recommendedAdditions && (
+                        <div className="mt-4 space-y-3 border-t border-[#EAE3DC]/60 pt-3">
+                          <div className="space-y-2">
+                            {analysisResult.recommendedAdditions.map((add, idx) => (
+                              <div
+                                key={idx}
+                                onClick={() => handleToggleAddition(idx)}
+                                className={`p-3 rounded-xl border cursor-pointer flex items-center justify-between gap-3 transition-all ${add.enabled ? 'bg-[#E8EDE7]/30 border-[#8DA399]/30' : 'bg-gray-50/50 border-[#EAE3DC]'}`}
+                              >
+                                <div>
+                                  <span className="font-bold text-xs block text-[#3D3935]">{add.item}</span>
+                                  <span className="text-[10px] text-[#9B9691] italic">{add.reason}</span>
+                                </div>
+                                <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 transition-all ${add.enabled ? 'bg-[#8DA399] border-[#8DA399] text-white' : 'border-[#EAE3DC] bg-white'}`}>
+                                  {add.enabled && <Check className="w-2.5 h-2.5 text-white" />}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <button
+                            onClick={handleBeautifyInChat}
+                            className="w-full py-2.5 bg-[#3D3935] hover:bg-black text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-md"
+                          >
+                            <Wand2 className="w-4 h-4 animate-pulse" />
+                            <span>确认配饰并开始美化</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Trigger */}
+                      {msg.type === 'beautify-trigger' && (
+                        <div className="mt-4">
+                          <button
+                            onClick={handleBeautifyInChat}
+                            className="w-full py-3 bg-[#3D3935] hover:bg-black text-white font-bold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-md"
+                          >
+                            <Wand2 className="w-4 h-4 animate-pulse" />
+                            <span>立即一键美化 (10 积分)</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Loading Indicator */}
+                      {msg.type === 'loading' && (
+                        <div className="mt-3 flex items-center gap-2 text-xs text-[#8DA399] font-medium animate-pulse">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>AI 重绘画卷正在徐徐铺开...</span>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Result Card */}
+                      {msg.type === 'result-card' && msg.image && (
+                        <div className="mt-4 space-y-4">
+                          <div className="relative rounded-xl overflow-hidden border border-[#EAE3DC] aspect-video bg-gray-50 flex items-center justify-center shadow-inner group">
+                            <img src={msg.image} alt="Result card illustration" className="max-w-full max-h-full object-contain" />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center cursor-pointer" onClick={() => { setBeautifiedImage(msg.image!); setIsModalOpen(true); }}>
+                              <span className="opacity-0 group-hover:opacity-100 bg-white/95 text-[#3D3935] text-xs px-3 py-1.5 rounded-lg shadow-lg font-bold transition-all">全屏查看</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => { setBeautifiedImage(msg.image!); setIsModalOpen(true); }}
+                              className="flex-1 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] text-[#6B6661] text-xs font-bold rounded-xl transition-all"
+                            >
+                              放大细节
+                            </button>
+                            <button
+                              onClick={handleDownload}
+                              className="flex-1 py-2 bg-[#8DA399] hover:bg-[#7C9288] text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>保存下载</span>
+                            </button>
+                            <button
+                              onClick={handleRestartInChat}
+                              className="py-2 px-3 bg-white hover:bg-red-50 border border-red-100 text-red-500 rounded-xl transition-all flex items-center justify-center"
+                              title="重新美化一张"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Chat Input Bar */}
+            <div className="p-4 sm:p-5 bg-white border-t border-[#EAE3DC]/80 flex items-center gap-3">
+              <input
+                type="text"
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(inputMessage); }}
+                className="flex-1 px-4 py-3 bg-[#F9F8F6] border border-[#EAE3DC] rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#8DA399]/20 focus:border-[#8DA399] transition-all"
+                placeholder={originalImage ? "给智能体发送指令（例如：选择暖色调、不要开启软装...）" : "请先选择原图上传..."}
+              />
+              <button
+                onClick={() => handleSendMessage(inputMessage)}
+                className="p-3 bg-[#3D3935] hover:bg-black text-white rounded-xl transition-all active:scale-95 shrink-0"
+              >
+                <Send className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start">
           {/* Left Column: Image Area */}
           <div className="space-y-6 sm:space-y-8">
             <div className="glass-panel p-5 sm:p-8 rounded-3xl lg:rounded-[2.5rem]">
@@ -711,6 +1614,9 @@ export default function App() {
             )}
           </div>
         </div>
+        )}
+          </>
+        )}
       </main>
 
       {/* Fullscreen Image Modal */}
