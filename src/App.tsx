@@ -83,7 +83,7 @@ export default function App() {
   const [toolInfo, setToolInfo] = useState<SaasToolInfo | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Initialize Welcome Message
   useEffect(() => {
@@ -122,7 +122,12 @@ export default function App() {
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   }, [messages]);
 
   // Handle postMessage for SAAS_INIT
@@ -681,6 +686,164 @@ export default function App() {
     setInputMessage('');
 
     setTimeout(() => {
+      const lowerText = text.toLowerCase();
+
+      // Intercept add/delete suggestion commands
+      if (analysisResult) {
+        const deleteKeywords = ["删除", "删掉", "去掉", "取消", "清除", "移除", "不想要", "不加", "拿掉", "裁减", "剪掉", "不要"];
+        let isDelete = false;
+        let deleteTarget = "";
+        
+        for (const kw of deleteKeywords) {
+          if (lowerText.includes(kw)) {
+            isDelete = true;
+            const index = lowerText.indexOf(kw);
+            let target = text.substring(index + kw.length).replace(/[:：建议软装方案核心点「」'"]/g, "").trim();
+            if (!target) {
+              target = text.substring(0, index).replace(/[把这那个个建议软装方案「」'"]/g, "").trim();
+            }
+            if (target) {
+              deleteTarget = target;
+            }
+            break;
+          }
+        }
+        
+        if (isDelete && deleteTarget) {
+          let deletedFromPoints = false;
+          let deletedFromAdditions = false;
+          let matchedItemName = "";
+          
+          const updatedPoints = analysisResult.beautifyPoints.filter(pt => {
+            if (pt.toLowerCase().includes(deleteTarget.toLowerCase())) {
+              deletedFromPoints = true;
+              matchedItemName = pt;
+              return false;
+            }
+            return true;
+          });
+          
+          let updatedAdditions = analysisResult.recommendedAdditions || [];
+          if (analysisResult.recommendedAdditions) {
+            updatedAdditions = analysisResult.recommendedAdditions.filter(add => {
+              if (add.item.toLowerCase().includes(deleteTarget.toLowerCase())) {
+                deletedFromAdditions = true;
+                matchedItemName = add.item;
+                return false;
+              }
+              return true;
+            });
+          }
+          
+          if (deletedFromPoints || deletedFromAdditions) {
+            setAnalysisResult({
+              ...analysisResult,
+              beautifyPoints: updatedPoints,
+              recommendedAdditions: updatedAdditions
+            });
+            
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-delete-confirm-' + Date.now(),
+                sender: 'ai',
+                text: `✨ 已为您在美化方案中移除了「${matchedItemName || deleteTarget}」。建议列表已实时更新！`,
+                type: 'text'
+              }
+            ]);
+            return;
+          } else {
+            const allItems = [
+              ...analysisResult.beautifyPoints,
+              ...(analysisResult.recommendedAdditions || []).map(a => a.item)
+            ];
+            const suggestionsList = allItems.filter(item => 
+              deleteTarget.split('').some(char => item.includes(char))
+            );
+
+            let feedbackText = `✨ 收到您的移除指令！未在当前的建议清单中直接找到「${deleteTarget}」。`;
+            if (suggestionsList.length > 0) {
+              feedbackText += `您是指以下某项吗？您可以直接发送指令删除它们：\n` + suggestionsList.map(s => ` - 删除「${s}」`).join('\n');
+            } else {
+              feedbackText += `我已在定制设计要求中为您记录了「排除：${deleteTarget}」的限制，生成时将避免出现此项。`;
+              setCustomRequirements(prev => {
+                const reqText = `排除：${deleteTarget}`;
+                if (prev.includes(reqText)) return prev;
+                return [...prev, reqText];
+              });
+            }
+
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-delete-not-found-' + Date.now(),
+                sender: 'ai',
+                text: feedbackText,
+                type: 'text'
+              }
+            ]);
+            return;
+          }
+        }
+        
+        // Detect Add / New Recommendation
+        const addKeywords = ["增加", "新增", "添加", "加上", "想加", "建议加上", "建议增加", "建议新增"];
+        let isAdd = false;
+        let addTarget = "";
+        
+        for (const kw of addKeywords) {
+          if (lowerText.includes(kw)) {
+            isAdd = true;
+            const index = lowerText.indexOf(kw);
+            let target = text.substring(index + kw.length).replace(/[:：建议软装方案核心点「」'"]/g, "").trim();
+            if (target) {
+              addTarget = target;
+            }
+            break;
+          }
+        }
+        
+        if (!isAdd && (text.startsWith("建议：") || text.startsWith("建议 ") || text.startsWith("建议在"))) {
+          isAdd = true;
+          addTarget = text.replace(/^建议[:：\s]*/, "").trim();
+        }
+        
+        if (isAdd && addTarget) {
+          const isSoftDecor = /(挂画|绿植|桌花|窗帘|吊灯|灯饰|摆设|餐具|配饰|软装|桌布|绿萝|发财树|花卉|盆栽|艺术品|钢琴|椅子|桌椅|饰品|花瓶|围裙|海报|菜单|壁画|地毯|餐垫|纸巾盒|调料瓶)/i.test(addTarget);
+          
+          let updatedPoints = [...analysisResult.beautifyPoints];
+          if (!updatedPoints.some(pt => pt.toLowerCase().includes(addTarget.toLowerCase()))) {
+            updatedPoints.push(addTarget);
+          }
+          
+          let updatedAdditions = [...(analysisResult.recommendedAdditions || [])];
+          if (isSoftDecor && !updatedAdditions.some(add => add.item.toLowerCase().includes(addTarget.toLowerCase()))) {
+            updatedAdditions.push({
+              item: addTarget,
+              reason: '用户对话新增的专属软装定制建议',
+              enabled: true
+            });
+          }
+          
+          setAnalysisResult({
+            ...analysisResult,
+            beautifyPoints: updatedPoints,
+            recommendedAdditions: updatedAdditions
+          });
+          
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-add-confirm-' + Date.now(),
+              sender: 'ai',
+              text: `✨ 已为您成功新增了美化建议：「${addTarget}」！${isSoftDecor ? '此建议也已同步加入软装升级清单并开启点缀。' : ''}您可以在设计建议面板或本对话中随时查看。`,
+              type: 'text'
+            }
+          ]);
+          return;
+        }
+      }
+
       // Parse parameters or custom requirements
       let parsedRatio = '';
       let parsedResolution = '';
@@ -688,7 +851,6 @@ export default function App() {
       let parsedDecor: boolean | null = null;
       let extraReq = '';
 
-      const lowerText = text.toLowerCase();
       const feedback: string[] = [];
 
       // 1. Ratio
@@ -1463,7 +1625,7 @@ export default function App() {
             </div>
 
             {/* Chat Messages */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scrollbar-thin scrollbar-thumb-[#EAE3DC] scrollbar-track-transparent">
+            <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scrollbar-thin scrollbar-thumb-[#EAE3DC] scrollbar-track-transparent">
               {messages.map((msg) => (
                 <div
                   key={msg.id}
@@ -1518,31 +1680,49 @@ export default function App() {
                       )}
 
                       {/* Interactive block - Analysis result */}
-                      {msg.type === 'analysis-result' && msg.meta && (
-                        <div className="mt-4 space-y-3 pt-3 border-t border-[#EAE3DC]/60 text-xs text-[#6B6661]">
-                          <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
-                            <span className="font-bold block text-[#3D3935] mb-1">📐 空间格局</span>
-                            {msg.meta.layout}
+                      {msg.type === 'analysis-result' && (analysisResult || msg.meta) && (() => {
+                        const activeAnalysis = analysisResult || msg.meta;
+                        return (
+                          <div className="mt-4 space-y-3 pt-3 border-t border-[#EAE3DC]/60 text-xs text-[#6B6661]">
+                            <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
+                              <span className="font-bold block text-[#3D3935] mb-1">📐 空间格局</span>
+                              {activeAnalysis.layout}
+                            </div>
+                            <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
+                              <span className="font-bold block text-[#3D3935] mb-1">🏺 空间风格</span>
+                              {activeAnalysis.style}
+                            </div>
+                            <div className="bg-[#E8EDE7]/60 p-3 rounded-lg border border-[#D9E2D7]">
+                              <span className="font-bold block text-[#4A5D4F] mb-1">💡 推荐光影逻辑</span>
+                              {activeAnalysis.lightingReason}
+                            </div>
+                            <div className="space-y-1.5">
+                              <span className="font-bold block text-[#3D3935] mt-2">✨ 空间核心美化方案：</span>
+                              {activeAnalysis.beautifyPoints.map((pt: string, idx: number) => (
+                                <div key={idx} className="flex items-center justify-between gap-1.5 bg-[#FDFCFB] px-2.5 py-1.5 rounded-lg border border-[#EAE3DC]/60 group/item transition-all">
+                                  <div className="flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-[#8DA399] shrink-0" />
+                                    <span>{pt}</span>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      const newPoints = activeAnalysis.beautifyPoints.filter((_, i) => i !== idx);
+                                      setAnalysisResult({ ...activeAnalysis, beautifyPoints: newPoints });
+                                    }}
+                                    className="p-1 text-[#9B9691] hover:text-red-500 rounded transition-all opacity-0 group-hover/item:opacity-100"
+                                    title="删除此建议"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="text-[10px] text-[#9B9691] italic bg-[#F2F0ED]/40 p-2 rounded-lg border border-dashed border-[#EAE3DC] mt-2 leading-relaxed">
+                              💡 提示：您可直接在下方对话框发送「增加 建议内容」或「删除 建议内容」来智能增删列表项。
+                            </div>
                           </div>
-                          <div className="bg-[#F9F8F6] p-3 rounded-lg border border-[#EAE3DC]">
-                            <span className="font-bold block text-[#3D3935] mb-1">🏺 空间风格</span>
-                            {msg.meta.style}
-                          </div>
-                          <div className="bg-[#E8EDE7]/60 p-3 rounded-lg border border-[#D9E2D7]">
-                            <span className="font-bold block text-[#4A5D4F] mb-1">💡 推荐光影逻辑</span>
-                            {msg.meta.lightingReason}
-                          </div>
-                          <div className="space-y-1.5">
-                            <span className="font-bold block text-[#3D3935] mt-2">✨ 空间核心美化方案：</span>
-                            {msg.meta.beautifyPoints.map((pt: string, idx: number) => (
-                              <div key={idx} className="flex items-center gap-1.5 bg-[#FDFCFB] px-2.5 py-1.5 rounded-lg border border-[#EAE3DC]/60">
-                                <CheckCircle2 className="w-3.5 h-3.5 text-[#8DA399] shrink-0" />
-                                <span>{pt}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Interactive block - Ratio Options */}
                       {msg.type === 'options-ratio' && (
@@ -1615,18 +1795,36 @@ export default function App() {
                             {analysisResult.recommendedAdditions.map((add, idx) => (
                               <div
                                 key={idx}
-                                onClick={() => handleToggleAddition(idx)}
-                                className={`p-3 rounded-xl border cursor-pointer flex items-center justify-between gap-3 transition-all ${add.enabled ? 'bg-[#E8EDE7]/30 border-[#8DA399]/30' : 'bg-gray-50/50 border-[#EAE3DC]'}`}
+                                className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition-all group/decor ${add.enabled ? 'bg-[#E8EDE7]/30 border-[#8DA399]/30' : 'bg-gray-50/50 border-[#EAE3DC]'}`}
                               >
-                                <div>
+                                <div className="flex-1 cursor-pointer" onClick={() => handleToggleAddition(idx)}>
                                   <span className="font-bold text-xs block text-[#3D3935]">{add.item}</span>
                                   <span className="text-[10px] text-[#9B9691] italic">{add.reason}</span>
                                 </div>
-                                <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 transition-all ${add.enabled ? 'bg-[#8DA399] border-[#8DA399] text-white' : 'border-[#EAE3DC] bg-white'}`}>
-                                  {add.enabled && <Check className="w-2.5 h-2.5 text-white" />}
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const newAdditions = analysisResult.recommendedAdditions.filter((_, i) => i !== idx);
+                                      setAnalysisResult({ ...analysisResult, recommendedAdditions: newAdditions });
+                                    }}
+                                    className="p-1 text-[#9B9691] hover:text-red-500 rounded transition-all opacity-0 group-hover/decor:opacity-100"
+                                    title="删除此项"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <div
+                                    onClick={() => handleToggleAddition(idx)}
+                                    className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 cursor-pointer transition-all ${add.enabled ? 'bg-[#8DA399] border-[#8DA399] text-white' : 'border-[#EAE3DC] bg-white'}`}
+                                  >
+                                    {add.enabled && <Check className="w-2.5 h-2.5 text-white" />}
+                                  </div>
                                 </div>
                               </div>
                             ))}
+                          </div>
+                          <div className="text-[10px] text-[#9B9691] italic bg-[#F2F0ED]/40 p-2 rounded-lg border border-dashed border-[#EAE3DC] mt-1 leading-relaxed">
+                            💡 提示：您可直接在下方对话框发送「增加 软装物品」或「删除 软装物品」来智能配置软装方案。
                           </div>
                           <button
                             onClick={handleBeautifyInChat}
@@ -1696,7 +1894,6 @@ export default function App() {
                   </div>
                 </div>
               ))}
-              <div ref={messagesEndRef} />
             </div>
 
             {/* Chat Input Bar */}
@@ -1707,7 +1904,7 @@ export default function App() {
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(inputMessage); }}
                 className="flex-1 px-4 py-3 bg-[#F9F8F6] border border-[#EAE3DC] rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#8DA399]/20 focus:border-[#8DA399] transition-all"
-                placeholder={originalImage ? "给智能体发送指令（例如：选择暖色调、不要开启软装...）" : "请先选择原图上传..."}
+                placeholder={originalImage ? "发送指令（如：选择暖色调、新增建议：放置大型盆栽、删除小型绿植）" : "请先选择原图上传..."}
               />
               <button
                 onClick={() => handleSendMessage(inputMessage)}
