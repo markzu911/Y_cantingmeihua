@@ -386,12 +386,6 @@ export default function App() {
             text: `分析完成！我发现了以下可以优化的地方：`,
             type: 'analysis-result',
             meta: result
-          },
-          {
-            id: 'ratio-choice-' + Date.now(),
-            sender: 'ai',
-            text: `为了呈现最符合您心意的美化图，请选择您期望的「画面比例（尺寸）」📐：`,
-            type: 'options-ratio'
           }
         ]));
       }
@@ -1562,26 +1556,6 @@ export default function App() {
           </div>
         ) : (
           <>
-            {/* Mode Switcher */}
-            <div className="flex justify-center mb-5 shrink-0">
-              <div className="bg-[#F2F0ED] p-1.5 rounded-2xl flex items-center shadow-sm border border-[#EAE3DC]">
-                <button
-                  onClick={() => setMode('agent')}
-                  className={`flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-all duration-300 ${mode === 'agent' ? 'bg-[#3D3935] text-white shadow-md' : 'text-[#9B9691] hover:text-[#6B6661]'}`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>智能体模式 (Agent)</span>
-                </button>
-                <button
-                  onClick={() => setMode('expert')}
-                  className={`flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-all duration-300 ${mode === 'expert' ? 'bg-[#3D3935] text-white shadow-md' : 'text-[#9B9691] hover:text-[#6B6661]'}`}
-                >
-                  <Settings className="w-4 h-4" />
-                  <span>专家模式 (Expert)</span>
-                </button>
-              </div>
-            </div>
-
             {error && (
               <div className="mb-6 sm:mb-8 p-4 sm:p-5 bg-red-50/70 backdrop-blur-sm border border-red-100 rounded-2xl sm:rounded-[2rem] flex items-start gap-3 sm:gap-4 text-red-800 shadow-sm animate-in fade-in slide-in-from-top-2">
                 <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-600" />
@@ -1720,6 +1694,19 @@ export default function App() {
                             <div className="text-[10px] text-[#9B9691] italic bg-[#F2F0ED]/40 p-2 rounded-lg border border-dashed border-[#EAE3DC] mt-2 leading-relaxed">
                               💡 提示：您可直接在下方对话框发送「增加 建议内容」或「删除 建议内容」来智能增删列表项。
                             </div>
+                            <button
+                              onClick={() => {
+                                setMessages(prev => [...prev, {
+                                  id: 'ratio-choice-' + Date.now(),
+                                  sender: 'ai',
+                                  text: `好的，确认建议后，请选择您期望的「画面比例（尺寸）」📐：`,
+                                  type: 'options-ratio'
+                                }]);
+                              }}
+                              className="w-full mt-3 py-2.5 bg-[#3D3935] text-white text-xs font-bold rounded-lg shadow-sm hover:opacity-90 transition-all active:scale-95"
+                            >
+                              确认建议，进入下一步：选择画面比例
+                            </button>
                           </div>
                         );
                       })()}
