@@ -1285,7 +1285,7 @@ export default function App() {
   }
 
   return (
-    <div className={`flex flex-col bg-[#FDFCFB] text-[#3D3935] font-sans relative ${mode === 'agent' ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
+    <div className="h-screen flex flex-col bg-[#FDFCFB] text-[#3D3935] font-sans relative overflow-hidden">
       <div className="absolute top-[-15%] left-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#E8EDE7] rounded-full blur-[120px] opacity-40 pointer-events-none" />
       <div className="absolute bottom-[-15%] right-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#F5EDE6] rounded-full blur-[120px] opacity-40 pointer-events-none" />
 
@@ -1321,9 +1321,9 @@ export default function App() {
         </div>
       </header>
 
-      <main className={`max-w-7xl w-full mx-auto px-4 sm:px-6 relative z-10 flex flex-col min-h-0 ${mode === 'agent' ? 'py-3 sm:py-4 flex-1 overflow-hidden' : 'py-6 sm:py-12'}`}>
+      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 relative z-10 flex flex-col flex-1 min-h-0 overflow-hidden py-3 sm:py-4">
         {mode === 'landing' ? (
-          <div className="max-w-5xl mx-auto py-12 sm:py-20 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500">
+          <div className="flex-1 w-full max-w-5xl mx-auto flex flex-col items-center justify-center py-4 sm:py-6 animate-in fade-in zoom-in-95 duration-500 overflow-y-auto no-scrollbar">
             {/* Badge */}
             <div className="mb-6 bg-white px-3.5 py-1.5 text-xs text-[#6B6661] font-bold border border-[#EAE3DC] rounded-full inline-flex items-center gap-1.5 shadow-sm">
               <span>🏠 餐厅美化智能助手 V4.0</span>
@@ -1401,7 +1401,7 @@ export default function App() {
         ) : (
           <>
             {/* Mode Switcher */}
-            <div className="flex justify-center mb-8">
+            <div className="flex justify-center mb-5 shrink-0">
               <div className="bg-[#F2F0ED] p-1.5 rounded-2xl flex items-center shadow-sm border border-[#EAE3DC]">
                 <button
                   onClick={() => setMode('agent')}
@@ -1718,11 +1718,11 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start">
+          <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-10 items-stretch min-h-0 overflow-hidden">
           {/* Left Column: Image Area */}
-          <div className="space-y-6 sm:space-y-8">
-            <div className="glass-panel p-5 sm:p-8 rounded-3xl lg:rounded-[2.5rem]">
-              <h2 className="text-lg sm:text-xl font-serif font-semibold mb-4 sm:mb-6 flex items-center gap-3 sm:gap-4 text-[#3D3935]">
+          <div className="h-full flex flex-col gap-6 overflow-y-auto pr-1.5 -mr-1.5 scrollbar-thin scrollbar-thumb-[#EAE3DC] scrollbar-track-transparent pb-4">
+            <div className={`glass-panel p-5 sm:p-8 rounded-3xl lg:rounded-[2.5rem] ${!originalImage ? 'flex-1 flex flex-col min-h-0' : ''}`}>
+              <h2 className="text-lg sm:text-xl font-serif font-semibold mb-4 sm:mb-6 flex items-center gap-3 sm:gap-4 text-[#3D3935] shrink-0">
                 <span className="flex items-center justify-center w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-[#F2F0ED] text-[#6B6661] text-[10px] sm:text-xs font-sans shadow-inner">01</span>
                 图片上传
               </h2>
@@ -1733,7 +1733,7 @@ export default function App() {
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
-                  className={`border-2 border-dashed rounded-2xl sm:rounded-[2rem] p-8 sm:p-16 flex flex-col items-center justify-center text-[#9B9691] transition-all cursor-pointer group ${isDragging ? 'border-[#8DA399] bg-[#E8EDE7]/50 scale-[1.01]' : 'border-[#EAE3DC] hover:bg-[#FDFCFB] hover:border-[#8DA399]'}`}
+                  className={`flex-1 border-2 border-dashed rounded-2xl sm:rounded-[2rem] p-8 sm:p-16 flex flex-col items-center justify-center text-[#9B9691] transition-all cursor-pointer group ${isDragging ? 'border-[#8DA399] bg-[#E8EDE7]/50 scale-[1.01]' : 'border-[#EAE3DC] hover:bg-[#FDFCFB] hover:border-[#8DA399]'}`}
                 >
                   <div className="bg-white p-4 sm:p-5 rounded-2xl sm:rounded-3xl shadow-[0_10px_20px_rgba(0,0,0,0.03)] mb-4 sm:mb-6 group-hover:scale-105 transition-transform duration-500">
                     <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
@@ -1822,9 +1822,9 @@ export default function App() {
           </div>
 
           {/* Right Column: Analysis & Customization */}
-          <div className="lg:sticky lg:top-28 space-y-6 sm:space-y-8">
+          <div className="h-full flex flex-col min-h-0 overflow-hidden pb-4">
             {!analysisResult ? (
-              <div className="glass-panel p-8 sm:p-12 rounded-3xl lg:rounded-[2.5rem] flex flex-col items-center justify-center text-center min-h-[300px] sm:min-h-[500px]">
+              <div className="glass-panel p-8 sm:p-12 rounded-3xl lg:rounded-[2.5rem] flex flex-col items-center justify-center text-center h-full">
                 <div className="bg-[#F2F0ED] p-4 sm:p-6 rounded-2xl sm:rounded-3xl mb-4 sm:mb-6 shadow-inner">
                   <ImageIcon className="w-8 h-8 sm:w-10 sm:h-10 text-[#9B9691] opacity-30" />
                 </div>
