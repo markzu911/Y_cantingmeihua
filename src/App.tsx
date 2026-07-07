@@ -59,6 +59,23 @@ export default function App() {
   const [customRequirements, setCustomRequirements] = useState<string[]>([]);
   const [inputMessage, setInputMessage] = useState('');
 
+  // User custom selections tracking
+  const [isRatioSelected, setIsRatioSelected] = useState(false);
+  const [isResolutionSelected, setIsResolutionSelected] = useState(false);
+  const [isDecorSelected, setIsDecorSelected] = useState(false);
+  const [isLightingSelected, setIsLightingSelected] = useState(false);
+
+  // Drag & drop state tracking
+  const [isDragging, setIsDragging] = useState(false);
+  const [isChatDragging, setIsChatDragging] = useState(false);
+
+  // Pending beautification if triggered before space analysis finishes
+  const beautifyPendingRef = useRef<{
+    pending: boolean;
+    options: { ratio: string; lighting: string; resolution: string };
+    allowAdditions: boolean;
+  } | null>(null);
+
   // SaaS Integration State
   const [userId, setUserId] = useState<string | null>(null);
   const [toolId, setToolId] = useState<string | null>(null);
@@ -160,10 +177,7 @@ export default function App() {
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processImageFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
@@ -213,6 +227,11 @@ export default function App() {
         setHistory([]);
         setError(null);
         setActiveTab('analysis');
+        setIsRatioSelected(false);
+        setIsResolutionSelected(false);
+        setIsDecorSelected(false);
+        setIsLightingSelected(false);
+        beautifyPendingRef.current = null;
 
         if (mode === 'agent') {
           setMessages(prev => [
@@ -230,6 +249,51 @@ export default function App() {
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    processImageFile(file);
+    e.target.value = ''; // Reset so uploading same file works
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      processImageFile(file);
+    }
+  };
+
+  const handleChatDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsChatDragging(true);
+  };
+
+  const handleChatDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsChatDragging(false);
+  };
+
+  const handleChatDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsChatDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      processImageFile(file);
+    }
   };
 
   const autoAnalyzeInChat = async (base64: string, mimeType: string) => {
@@ -271,25 +335,61 @@ export default function App() {
     try {
       const result = await analyzeRestaurantImage(base64, mimeType);
       setAnalysisResult(result);
+      
+      const recommendedLighting = result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)
+        ? result.recommendedLighting
+        : '暖色调';
+
       if (result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)) {
         setOptions(prev => ({ ...prev, lighting: result.recommendedLighting }));
       }
 
-      setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
-        {
-          id: 'analysis-res-' + Date.now(),
-          sender: 'ai',
-          text: `分析完成！我发现了以下可以优化的地方：`,
-          type: 'analysis-result',
-          meta: result
-        },
-        {
-          id: 'lighting-choice-' + Date.now(),
-          sender: 'ai',
-          text: `请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${result.recommendedLighting})`,
-          type: 'options-lighting'
-        }
-      ]));
+      if (beautifyPendingRef.current && beautifyPendingRef.current.pending) {
+        const pendingConfig = beautifyPendingRef.current;
+        beautifyPendingRef.current = null; // reset
+
+        const finalOptions = {
+          ...pendingConfig.options,
+          lighting: recommendedLighting
+        };
+
+        setOptions(finalOptions);
+        setAllowAdditions(pendingConfig.allowAdditions);
+        setIsRatioSelected(true);
+        setIsResolutionSelected(true);
+        setIsDecorSelected(true);
+        setIsLightingSelected(true);
+
+        setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
+          {
+            id: 'analysis-res-' + Date.now(),
+            sender: 'ai',
+            text: `分析完成！已为您自动匹配最佳艺术基调为「${recommendedLighting}」。\n将使用默认参数（${finalOptions.resolution}, ${finalOptions.ratio}, 不需要软装）立即为您启动一键美化...`,
+            type: 'analysis-result',
+            meta: result
+          }
+        ]));
+
+        setTimeout(() => {
+          handleBeautifyInChat(finalOptions, pendingConfig.allowAdditions, result);
+        }, 1200);
+      } else {
+        setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
+          {
+            id: 'analysis-res-' + Date.now(),
+            sender: 'ai',
+            text: `分析完成！我发现了以下可以优化的地方：`,
+            type: 'analysis-result',
+            meta: result
+          },
+          {
+            id: 'lighting-choice-' + Date.now(),
+            sender: 'ai',
+            text: `请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${result.recommendedLighting})`,
+            type: 'options-lighting'
+          }
+        ]));
+      }
     } catch (err: any) {
       setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
         {
@@ -304,6 +404,7 @@ export default function App() {
 
   const handleSelectLightingInChat = (lighting: string) => {
     setOptions(prev => ({ ...prev, lighting }));
+    setIsLightingSelected(true);
     setMessages(prev => [
       ...prev,
       {
@@ -322,6 +423,7 @@ export default function App() {
 
   const handleSelectDecorInChat = (enabled: boolean) => {
     setAllowAdditions(enabled);
+    setIsDecorSelected(true);
     if (enabled) {
       setMessages(prev => [
         ...prev,
@@ -355,8 +457,9 @@ export default function App() {
     }
   };
 
-  const handleBeautifyInChat = async () => {
-    if (!originalImage || !analysisResult) return;
+  const handleBeautifyInChat = async (optionsOverride?: typeof options, allowAdditionsOverride?: boolean, analysisResultOverride?: AnalysisResult) => {
+    const finalAnalysisResult = analysisResultOverride || analysisResult;
+    if (!originalImage || !finalAnalysisResult) return;
 
     const beautifyLoadingId = 'ai-beautifying-' + Date.now();
     setMessages(prev => [
@@ -402,9 +505,9 @@ export default function App() {
       const resultImageBase64 = await beautifyRestaurantImage(
         originalImage.base64,
         originalImage.mimeType,
-        analysisResult,
-        options,
-        allowAdditions,
+        finalAnalysisResult,
+        optionsOverride || options,
+        allowAdditionsOverride !== undefined ? allowAdditionsOverride : allowAdditions,
         customRequirements
       );
 
@@ -586,22 +689,152 @@ export default function App() {
       }
 
       // 4. Decor Additions
-      if (lowerText.includes('不开启软装') || lowerText.includes('不加配饰') || lowerText.includes('不加装饰') || lowerText.includes('纯净清洁') || lowerText.includes('仅清洁') || lowerText.includes('仅做清洁') || lowerText.includes('关闭软装') || lowerText.includes('不开启配饰') || lowerText.includes('关闭配饰')) {
+      if (lowerText.includes('不开启软装') || lowerText.includes('不加配饰') || lowerText.includes('不加装饰') || lowerText.includes('纯净清洁') || lowerText.includes('仅清洁') || lowerText.includes('仅做清洁') || lowerText.includes('关闭软装') || lowerText.includes('不开启配饰') || lowerText.includes('关闭配饰') || lowerText.includes('不要软装') || lowerText.includes('关闭软装推荐')) {
         parsedDecor = false;
         feedback.push('🍃 装饰装潢：不额外增加新配饰，保持原格局仅进行材质修复与提亮');
-      } else if (lowerText.includes('开启软装') || lowerText.includes('加配饰') || lowerText.includes('开启配饰') || lowerText.includes('添加配饰') || lowerText.includes('添加软装')) {
+      } else if (lowerText.includes('开启软装') || lowerText.includes('加配饰') || lowerText.includes('开启配饰') || lowerText.includes('添加配饰') || lowerText.includes('添加软装') || lowerText.includes('要软装') || lowerText.includes('开启软装推荐')) {
         parsedDecor = true;
         feedback.push('🌸 装饰装潢：已开启智能空间配饰推荐点缀');
       }
 
-      // Apply options changes if parsed
-      if (parsedRatio) setOptions(prev => ({ ...prev, ratio: parsedRatio }));
-      if (parsedResolution) setOptions(prev => ({ ...prev, resolution: parsedResolution }));
-      if (parsedLighting) setOptions(prev => ({ ...prev, lighting: parsedLighting }));
-      if (parsedDecor !== null) setAllowAdditions(parsedDecor);
+      // Local tracking variables for this turn
+      let currentLighting = options.lighting;
+      let currentDecor: boolean | null = allowAdditions;
+      let wasLightingChosen = !!parsedLighting;
+      let wasDecorChosen = parsedDecor !== null;
 
-      // 5. If it's a descriptive custom requirement
-      const isJustKeyword = ['暖色调', '清新浅色', '高端暗色', '16:9', '4:3', '1:1', '3:4', '9:16', '1k', '2k', '开启软装', '关闭软装', '开启配饰', '关闭配饰'].some(kw => lowerText === kw);
+      const lastAiMsg = [...messages].reverse().find(m => m.sender === 'ai');
+      const stage = lastAiMsg?.type || 'text';
+
+      // Stage-specific implicit parsing
+      if (stage === 'options-lighting' && !wasLightingChosen) {
+        if (lowerText.includes('暖') || lowerText.includes('黄') || lowerText.includes('温馨')) {
+          parsedLighting = '暖色调';
+          wasLightingChosen = true;
+          feedback.push('💡 艺术光影基调已设为：暖色调 (温馨舒适，宾至如归)');
+        } else if (lowerText.includes('白') || lowerText.includes('清新') || lowerText.includes('亮') || lowerText.includes('浅')) {
+          parsedLighting = '清新浅色';
+          wasLightingChosen = true;
+          feedback.push('💡 艺术光影基调已设为：清新浅色 (透亮清爽，洁净宜人)');
+        } else if (lowerText.includes('黑') || lowerText.includes('暗') || lowerText.includes('雅') || lowerText.includes('奢')) {
+          parsedLighting = '高端暗色';
+          wasLightingChosen = true;
+          feedback.push('💡 艺术光影基调已设为：高端暗色 (典雅深邃，质感非凡)');
+        }
+      }
+
+      if (stage === 'options-decor' && !wasDecorChosen) {
+        if (lowerText.includes('开') || lowerText.includes('要') || lowerText.includes('是') || lowerText.includes('需要') || lowerText.includes('加')) {
+          parsedDecor = true;
+          wasDecorChosen = true;
+          feedback.push('🌸 装饰装潢：已开启智能空间配饰推荐点缀');
+        } else if (lowerText.includes('不') || lowerText.includes('否') || lowerText.includes('仅清洁') || lowerText.includes('关') || lowerText.includes('去')) {
+          parsedDecor = false;
+          wasDecorChosen = true;
+          feedback.push('🍃 装饰装潢：不额外增加新配饰，保持原格局仅进行材质修复与提亮');
+        }
+      }
+
+      // If they are on final stage and say "不开启软装" or "不要软装了" etc., parse it
+      if ((stage === 'decor-checkboxes' || stage === 'beautify-trigger') && !wasDecorChosen) {
+        if (lowerText.includes('不') || lowerText.includes('关') || lowerText.includes('去') || lowerText.includes('清洁') || lowerText.includes('不要')) {
+          parsedDecor = false;
+          wasDecorChosen = true;
+          feedback.push('🍃 装饰装潢已变更为：不开启软装配饰，仅进行清洁材质提亮');
+        } else if (lowerText.includes('开') || lowerText.includes('要') || lowerText.includes('加') || lowerText.includes('软装')) {
+          parsedDecor = true;
+          wasDecorChosen = true;
+          feedback.push('🌸 装饰装潢已变更为：已开启智能空间配饰推荐点缀');
+        }
+      }
+
+      // Apply options changes if parsed
+      if (parsedRatio) {
+        setOptions(prev => ({ ...prev, ratio: parsedRatio }));
+        setIsRatioSelected(true);
+      }
+      if (parsedResolution) {
+        setOptions(prev => ({ ...prev, resolution: parsedResolution }));
+        setIsResolutionSelected(true);
+      }
+      if (parsedLighting) {
+        setOptions(prev => ({ ...prev, lighting: parsedLighting }));
+        setIsLightingSelected(true);
+        currentLighting = parsedLighting;
+      }
+      if (parsedDecor !== null) {
+        setAllowAdditions(parsedDecor);
+        setIsDecorSelected(true);
+        currentDecor = parsedDecor;
+      }
+
+      // 5. Trigger word check to start beautification automatically if requested
+      const isTriggerWord = (lowerText.includes('开始') || lowerText.includes('一键美化') || lowerText.includes('生成') || lowerText.includes('画') || lowerText.includes('渲染')) && !lowerText.includes('不') && !lowerText.includes('关闭');
+      if (isTriggerWord) {
+        if (!originalImage) {
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-resp-' + Date.now(),
+              sender: 'ai',
+              text: '💡 请先上传您的餐厅原始照片 📸 才能开始进行设计美化生成哦！您可以通过点击下方的「选择原图」按钮或拖拽图片进行上传。',
+              type: 'image-upload'
+            }
+          ]);
+          return;
+        } else if (!analysisResult) {
+          // It's still analyzing! Setup pending beautification config
+          const finalRatio = isRatioSelected ? (parsedRatio || options.ratio) : '1:1';
+          const finalResolution = isResolutionSelected ? (parsedResolution || options.resolution) : '1K';
+          const finalDecor = isDecorSelected ? (parsedDecor !== null ? parsedDecor : allowAdditions) : false;
+          
+          beautifyPendingRef.current = {
+            pending: true,
+            options: {
+              ratio: finalRatio,
+              lighting: parsedLighting || options.lighting,
+              resolution: finalResolution
+            },
+            allowAdditions: finalDecor
+          };
+
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-pending-beautify-' + Date.now(),
+              sender: 'ai',
+              text: `🚀 收到一键生成指令！正在为您加速进行空间特征审视与智能分析中。\n分析完成后，将自动应用默认/当前设计预设（比例: ${finalRatio}, 分辨率: ${finalResolution}, 软装: ${finalDecor ? '开启' : '不开启'}）直接启动一键美化，请稍等片刻... ⏳`
+            }
+          ]);
+          return;
+        } else {
+          // Both image and analysis results are ready!
+          // Apply defaults if they haven't chosen them yet
+          const finalRatio = isRatioSelected ? (parsedRatio || options.ratio) : '1:1';
+          const finalResolution = isResolutionSelected ? (parsedResolution || options.resolution) : '1K';
+          const finalDecor = isDecorSelected ? (parsedDecor !== null ? parsedDecor : allowAdditions) : false;
+          const finalLighting = parsedLighting || options.lighting;
+
+          const overriddenOptions = {
+            ratio: finalRatio,
+            resolution: finalResolution,
+            lighting: finalLighting
+          };
+
+          // Synchronously set state so the UI updates
+          setOptions(overriddenOptions);
+          setAllowAdditions(finalDecor);
+          setIsRatioSelected(true);
+          setIsResolutionSelected(true);
+          setIsDecorSelected(true);
+
+          handleBeautifyInChat(overriddenOptions, finalDecor);
+          return;
+        }
+      }
+
+      // 6. Record descriptive custom requirement
+      const isJustKeyword = ['暖色调', '清新浅色', '高端暗色', '16:9', '4:3', '1:1', '3:4', '9:16', '1k', '2k', '开启软装', '关闭软装', '开启配饰', '关闭配饰', '不要软装'].some(kw => lowerText === kw);
       if (!isJustKeyword && text.length >= 2) {
         extraReq = text;
         setCustomRequirements(prev => {
@@ -631,53 +864,42 @@ export default function App() {
           }
         ]);
       } else {
-        const lastAiMsg = [...messages].reverse().find(m => m.sender === 'ai');
-        
-        // If there were matched parameters/requirements
-        if (feedback.length > 0) {
-          const feedbackText = `收到！已为您成功解析并更新以下设计指令：\n${feedback.join('\n')}\n\n该设置已生效。您可以继续输入其他要求，或点击下方选项、按钮继续美化流程 👇`;
-          
-          setMessages(prev => [
-            ...prev,
-            {
-              id: 'ai-param-feedback-' + Date.now(),
-              sender: 'ai',
-              text: feedbackText,
-              type: lastAiMsg?.type === 'options-lighting' ? 'options-lighting' : (lastAiMsg?.type === 'options-decor' ? 'options-decor' : 'text')
-            }
-          ]);
-        } else {
-          // If no specific parameter matched and was just conversational, fall back to guided flow
-          if (lastAiMsg?.type === 'options-lighting') {
-            if (lowerText.includes('暖') || lowerText.includes('黄') || lowerText.includes('温馨')) {
-              handleSelectLightingInChat('暖色调');
-            } else if (lowerText.includes('白') || lowerText.includes('清新') || lowerText.includes('亮')) {
-              handleSelectLightingInChat('清新浅色');
-            } else if (lowerText.includes('黑') || lowerText.includes('暗') || lowerText.includes('雅')) {
-              handleSelectLightingInChat('高端暗色');
+        const feedbackPrefix = feedback.length > 0 
+          ? `✨ 已为您解析并实时更新设计指令：\n${feedback.map(f => ` - ${f}`).join('\n')}\n\n` 
+          : '';
+
+        // Dialog State Machine
+        if (stage === 'options-lighting') {
+          if (wasLightingChosen) {
+            if (wasDecorChosen) {
+              if (currentDecor === true) {
+                setMessages(prev => [
+                  ...prev,
+                  {
+                    id: 'ai-decor-items-' + Date.now(),
+                    sender: 'ai',
+                    text: `${feedbackPrefix}艺术基调已确认设为「${currentLighting}」，并已开启智能软装推荐。为您定制推荐了以下几项软装升级，您可以自由挑选：`,
+                    type: 'decor-checkboxes'
+                  }
+                ]);
+              } else {
+                setMessages(prev => [
+                  ...prev,
+                  {
+                    id: 'ai-beautify-ready-' + Date.now(),
+                    sender: 'ai',
+                    text: `${feedbackPrefix}艺术基调已确认设为「${currentLighting}」，且不加配饰。我们将保持原有的陈设，纯净清洗除垢，提升材质的高级质感。请确认以下设计预设无误，点击开始一键美化。`,
+                    type: 'beautify-trigger'
+                  }
+                ]);
+              }
             } else {
               setMessages(prev => [
                 ...prev,
                 {
-                  id: 'ai-resp-' + Date.now(),
+                  id: 'ai-decor-ask-' + Date.now(),
                   sender: 'ai',
-                  text: `收到！您说：“${text}”。您可以点击下方选项来进行选择：`,
-                  type: 'options-lighting'
-                }
-              ]);
-            }
-          } else if (lastAiMsg?.type === 'options-decor') {
-            if (text.includes('开') || text.includes('要') || text.includes('是')) {
-              handleSelectDecorInChat(true);
-            } else if (text.includes('不') || text.includes('否') || text.includes('仅清洁')) {
-              handleSelectDecorInChat(false);
-            } else {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-resp-' + Date.now(),
-                  sender: 'ai',
-                  text: '收到！建议您直接点击下方按钮选择：是否开启「智能空间软装推荐」？',
+                  text: `${feedbackPrefix}已确认艺术基调为「${currentLighting}」！接下来，是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
                   type: 'options-decor'
                 }
               ]);
@@ -686,12 +908,84 @@ export default function App() {
             setMessages(prev => [
               ...prev,
               {
-                id: 'ai-resp-' + Date.now(),
+                id: 'ai-lighting-ask-again-' + Date.now(),
                 sender: 'ai',
-                text: `收到您的消息！您的要求 “${text}” 已经记录。我们已将其融合到了后面的渲染重绘中。您可以点击对应的选项或直接开始一键美化。`
+                text: `${feedbackPrefix}请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${analysisResult.recommendedLighting})`,
+                type: 'options-lighting'
               }
             ]);
           }
+        } else if (stage === 'options-decor') {
+          if (wasDecorChosen) {
+            if (currentDecor === true) {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-decor-items-' + Date.now(),
+                  sender: 'ai',
+                  text: `${feedbackPrefix}已开启智能空间配饰推荐点缀！为您定制推荐了以下几项软装升级，您可以自由挑选：`,
+                  type: 'decor-checkboxes'
+                }
+              ]);
+            } else {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-beautify-ready-' + Date.now(),
+                  sender: 'ai',
+                  text: `${feedbackPrefix}好的，我们将保持原有的陈设，纯净清洗除垢，提升材质的高级质感。请确认以下设计预设无误，点击开始一键美化。`,
+                  type: 'beautify-trigger'
+                }
+              ]);
+            }
+          } else {
+            if (wasLightingChosen) {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-decor-ask-again-' + Date.now(),
+                  sender: 'ai',
+                  text: `${feedbackPrefix}艺术基调已重设为「${currentLighting}」！接下来，请问是否开启「智能空间软装推荐」？`,
+                  type: 'options-decor'
+                }
+              ]);
+            } else {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: 'ai-decor-ask-again-' + Date.now(),
+                  sender: 'ai',
+                  text: `${feedbackPrefix}请选择：是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
+                  type: 'options-decor'
+                }
+              ]);
+            }
+          }
+        } else if (stage === 'decor-checkboxes' || stage === 'beautify-trigger') {
+          const targetType = currentDecor ? 'decor-checkboxes' : 'beautify-trigger';
+          const modeDesc = currentDecor 
+            ? `【开启软装推荐】。这里是为您定制的配饰清单，您可以自由勾选：` 
+            : `【不开启软装（纯净清洁）】模式。请确认设计预设无误，点击开始一键美化。`;
+
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-param-feedback-' + Date.now(),
+              sender: 'ai',
+              text: `${feedbackPrefix}设计参数已即时更新为 ${modeDesc}`,
+              type: targetType
+            }
+          ]);
+        } else {
+          // Fallback
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-resp-' + Date.now(),
+              sender: 'ai',
+              text: `${feedbackPrefix}您的要求已成功注入后面的渲染重绘中。您可以点击对应的选项或直接开始一键美化 🚀`
+            }
+          ]);
         }
       }
     }, 800);
@@ -1140,7 +1434,10 @@ export default function App() {
                           {!originalImage ? (
                             <div
                               onClick={() => fileInputRef.current?.click()}
-                              className="border border-dashed border-[#8DA399] rounded-xl p-6 flex flex-col items-center justify-center bg-[#FDFCFB]/80 hover:bg-[#F2F0ED]/30 transition-all cursor-pointer group animate-pulse"
+                              onDragOver={handleChatDragOver}
+                              onDragLeave={handleChatDragLeave}
+                              onDrop={handleChatDrop}
+                              className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer group ${isChatDragging ? 'border-[#8DA399] bg-[#E8EDE7]/50 scale-[1.02]' : 'border-[#8DA399] bg-[#FDFCFB]/80 hover:bg-[#F2F0ED]/30 animate-pulse'}`}
                             >
                               <Upload className="w-6 h-6 text-[#8DA399] mb-2" />
                               <span className="text-xs font-bold text-[#6B6661]">选择您想要美化的餐厅照片</span>
@@ -1345,7 +1642,10 @@ export default function App() {
               {!originalImage ? (
                 <div 
                   onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-[#EAE3DC] rounded-2xl sm:rounded-[2rem] p-8 sm:p-16 flex flex-col items-center justify-center text-[#9B9691] hover:bg-[#FDFCFB] hover:border-[#8DA399] transition-all cursor-pointer group"
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`border-2 border-dashed rounded-2xl sm:rounded-[2rem] p-8 sm:p-16 flex flex-col items-center justify-center text-[#9B9691] transition-all cursor-pointer group ${isDragging ? 'border-[#8DA399] bg-[#E8EDE7]/50 scale-[1.01]' : 'border-[#EAE3DC] hover:bg-[#FDFCFB] hover:border-[#8DA399]'}`}
                 >
                   <div className="bg-white p-4 sm:p-5 rounded-2xl sm:rounded-3xl shadow-[0_10px_20px_rgba(0,0,0,0.03)] mb-4 sm:mb-6 group-hover:scale-105 transition-transform duration-500">
                     <Upload className="w-8 h-8 sm:w-10 sm:h-10 text-[#8DA399] opacity-70 group-hover:opacity-100" />
@@ -1524,7 +1824,10 @@ export default function App() {
                           <p className="text-[10px] sm:text-xs text-[#9B9691] mt-1 sm:mt-1.5 leading-relaxed">启用后，AI 将自动推荐饰品、绿植及灯具。</p>
                         </div>
                         <button 
-                          onClick={() => setAllowAdditions(!allowAdditions)} 
+                          onClick={() => {
+                            setAllowAdditions(!allowAdditions);
+                            setIsDecorSelected(true);
+                          }} 
                           className={`w-12 sm:w-14 h-6 sm:h-7 rounded-full transition-all duration-500 relative shadow-inner shrink-0 ${allowAdditions ? 'bg-[#8DA399]' : 'bg-[#EAE3DC]'}`}
                         >
                           <div className={`w-4.5 h-4.5 sm:w-5.5 sm:h-5.5 bg-white rounded-full absolute top-0.75 transition-transform duration-500 shadow-md ${allowAdditions ? 'translate-x-[1.4rem] sm:translate-x-[1.85rem]' : 'translate-x-0.75'}`} />
@@ -1570,7 +1873,12 @@ export default function App() {
                             {group.options.map(val => (
                               <button
                                 key={val}
-                                onClick={() => setOptions({...options, [group.key]: val})}
+                                onClick={() => {
+                                  setOptions({...options, [group.key]: val});
+                                  if (group.key === 'ratio') setIsRatioSelected(true);
+                                  if (group.key === 'resolution') setIsResolutionSelected(true);
+                                  if (group.key === 'lighting') setIsLightingSelected(true);
+                                }}
                                 className={`px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold transition-all border ${options[group.key as keyof typeof options] === val ? 'bg-[#3D3935] border-[#3D3935] text-white shadow-lg sm:shadow-xl' : 'bg-white border-[#EAE3DC] text-[#6B6661] hover:border-[#8DA399] hover:bg-[#FDFCFB]'}`}
                               >
                                 {val}
