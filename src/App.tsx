@@ -1386,13 +1386,6 @@ export default function App() {
                   )}
                 </div>
               )}
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleImageUpload} 
-                accept="image/*" 
-                className="hidden" 
-              />
             </div>
 
             {/* Output Image */}
@@ -1650,6 +1643,13 @@ export default function App() {
           </div>
         </div>
       )}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleImageUpload} 
+        accept="image/*" 
+        className="hidden" 
+      />
     </div>
   );
 }
