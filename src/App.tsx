@@ -921,8 +921,16 @@ export default function App() {
       }
 
       // 6. Record descriptive custom requirement
-      const isJustKeyword = ['暖色调', '清新浅色', '高端暗色', '16:9', '4:3', '1:1', '3:4', '9:16', '1k', '2k', '开启软装', '关闭软装', '开启配饰', '关闭配饰', '不要软装'].some(kw => lowerText === kw);
-      if (!isJustKeyword && text.length >= 2) {
+      let remainingText = lowerText;
+      remainingText = remainingText.replace(/(16:9|4:3|1:1|3:4|9:16|16比9|4比3|1比1|3比4|9比16|正方形|宽屏|横屏|竖屏|手机屏幕|手机竖屏|竖版|横版|比例)/g, '');
+      remainingText = remainingText.replace(/(4k|2k|1k|uhd|hd|超清|高清|标清|分辨率|清晰度)/g, '');
+      remainingText = remainingText.replace(/(暖色调|暖调|暖光|温馨|黄光|清新浅色|清新|浅色|白光|明亮|冷光|高端暗色|高端|暗色|奢华|雅致|暗调|高奢|艺术基调|光影)/g, '');
+      remainingText = remainingText.replace(/(不开启软装|不加配饰|不加装饰|纯净清洁|仅清洁|仅做清洁|关闭软装|不开启配饰|关闭配饰|不要软装|关闭软装推荐|开启软装|加配饰|开启配饰|添加配饰|添加软装|要软装|开启软装推荐|软装|配饰|点缀|装饰|不用)/g, '');
+      
+      const cleanRemaining = remainingText.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()？?，。！：]/g, '').trim();
+      const hasActualCustomRequest = cleanRemaining.length >= 2;
+
+      if (hasActualCustomRequest) {
         extraReq = text;
         setCustomRequirements(prev => {
           if (prev.includes(text)) return prev;
@@ -955,168 +963,87 @@ export default function App() {
           ? `✨ 已为您解析并实时更新设计指令：\n${feedback.map(f => ` - ${f}`).join('\n')}\n\n` 
           : '';
 
-        // Dialog State Machine
-        if (stage === 'options-ratio') {
-          if (wasRatioChosen) {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: 'ai-resolution-ask-' + Date.now(),
-                sender: 'ai',
-                text: `${feedbackPrefix}已确认画面比例为「${parsedRatio || options.ratio}」！接下来，请选择您需要的「画面清晰度（分辨率）」💎：`,
-                type: 'options-resolution'
-              }
-            ]);
-          } else {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: 'ai-ratio-ask-again-' + Date.now(),
-                sender: 'ai',
-                text: `${feedbackPrefix}为了呈现最符合您心意的美化图，请选择您期望的「画面比例（尺寸）」📐：`,
-                type: 'options-ratio'
-              }
-            ]);
-          }
-        } else if (stage === 'options-resolution') {
-          if (wasResolutionChosen) {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: 'ai-lighting-ask-' + Date.now(),
-                sender: 'ai',
-                text: `${feedbackPrefix}已确认分辨率为「${parsedResolution || options.resolution}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult?.recommendedLighting || '暖色调'})`,
-                type: 'options-lighting'
-              }
-            ]);
-          } else {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: 'ai-resolution-ask-again-' + Date.now(),
-                sender: 'ai',
-                text: `${feedbackPrefix}请选择您需要的「画面清晰度（分辨率）」💎：`,
-                type: 'options-resolution'
-              }
-            ]);
-          }
-        } else if (stage === 'options-lighting') {
-          if (wasLightingChosen) {
-            if (wasDecorChosen) {
-              if (currentDecor === true) {
-                setMessages(prev => [
-                  ...prev,
-                  {
-                    id: 'ai-decor-items-' + Date.now(),
-                    sender: 'ai',
-                    text: `${feedbackPrefix}艺术基调已确认设为「${currentLighting}」，并已开启智能软装推荐。为您定制推荐了以下几项软装升级，您可以自由挑选：`,
-                    type: 'decor-checkboxes'
-                  }
-                ]);
-              } else {
-                setMessages(prev => [
-                  ...prev,
-                  {
-                    id: 'ai-beautify-ready-' + Date.now(),
-                    sender: 'ai',
-                    text: `${feedbackPrefix}艺术基调已确认设为「${currentLighting}」，且不加配饰。我们将保持原有的陈设，纯净清洗除垢，提升材质的高级质感。请确认以下设计预设无误，点击开始一键美化。`,
-                    type: 'beautify-trigger'
-                  }
-                ]);
-              }
-            } else {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-decor-ask-' + Date.now(),
-                  sender: 'ai',
-                  text: `${feedbackPrefix}已确认艺术基调为「${currentLighting}」！接下来，是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
-                  type: 'options-decor'
-                }
-              ]);
-            }
-          } else {
-            setMessages(prev => [
-              ...prev,
-              {
-                id: 'ai-lighting-ask-again-' + Date.now(),
-                sender: 'ai',
-                text: `${feedbackPrefix}请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${analysisResult.recommendedLighting})`,
-                type: 'options-lighting'
-              }
-            ]);
-          }
-        } else if (stage === 'options-decor') {
-          if (wasDecorChosen) {
-            if (currentDecor === true) {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-decor-items-' + Date.now(),
-                  sender: 'ai',
-                  text: `${feedbackPrefix}已开启智能空间配饰推荐点缀！为您定制推荐了以下几项软装升级，您可以自由挑选：`,
-                  type: 'decor-checkboxes'
-                }
-              ]);
-            } else {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-beautify-ready-' + Date.now(),
-                  sender: 'ai',
-                  text: `${feedbackPrefix}好的，我们将保持原有的陈设，纯净清洗除垢，提升材质的高级质感。请确认以下设计预设无误，点击开始一键美化。`,
-                  type: 'beautify-trigger'
-                }
-              ]);
-            }
-          } else {
-            if (wasLightingChosen) {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-decor-ask-again-' + Date.now(),
-                  sender: 'ai',
-                  text: `${feedbackPrefix}艺术基调已重设为「${currentLighting}」！接下来，请问是否开启「智能空间软装推荐」？`,
-                  type: 'options-decor'
-                }
-              ]);
-            } else {
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: 'ai-decor-ask-again-' + Date.now(),
-                  sender: 'ai',
-                  text: `${feedbackPrefix}请选择：是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
-                  type: 'options-decor'
-                }
-              ]);
-            }
-          }
-        } else if (stage === 'decor-checkboxes' || stage === 'beautify-trigger') {
-          const targetType = currentDecor ? 'decor-checkboxes' : 'beautify-trigger';
-          const modeDesc = currentDecor 
-            ? `【开启软装推荐】。这里是为您定制的配饰清单，您可以自由勾选：` 
-            : `【不开启软装（纯净清洁）】模式。请确认设计预设无误，点击开始一键美化。`;
+        // Dialog State Machine - Dynamic & Adaptive State-Skipping Pipeline
+        const isRatioDone = isRatioSelected || !!parsedRatio;
+        const isResDone = isResolutionSelected || !!parsedResolution;
+        const isLightingDone = isLightingSelected || !!parsedLighting;
+        const isDecorDone = isDecorSelected || (parsedDecor !== null);
 
+        if (!isRatioDone) {
+          // Ratio is missing
           setMessages(prev => [
             ...prev,
             {
-              id: 'ai-param-feedback-' + Date.now(),
+              id: 'ai-ratio-ask-' + Date.now(),
               sender: 'ai',
-              text: `${feedbackPrefix}设计参数已即时更新为 ${modeDesc}`,
-              type: targetType
+              text: `${feedbackPrefix}为了呈现最符合您心意的美化图，请选择您期望的「画面比例（尺寸）」📐：`,
+              type: 'options-ratio'
+            }
+          ]);
+        } else if (!isResDone) {
+          // Resolution is missing
+          const ratioVal = parsedRatio || options.ratio;
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-resolution-ask-' + Date.now(),
+              sender: 'ai',
+              text: `${feedbackPrefix}已确认画面比例为「${ratioVal}」！接下来，请选择您需要的「画面清晰度（分辨率）」💎：`,
+              type: 'options-resolution'
+            }
+          ]);
+        } else if (!isLightingDone) {
+          // Lighting is missing
+          const resVal = parsedResolution || options.resolution;
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-lighting-ask-' + Date.now(),
+              sender: 'ai',
+              text: `${feedbackPrefix}已确认分辨率为「${resVal}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult?.recommendedLighting || '暖色调'})`,
+              type: 'options-lighting'
+            }
+          ]);
+        } else if (!isDecorDone) {
+          // Decor is missing
+          const lightingVal = currentLighting;
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-decor-ask-' + Date.now(),
+              sender: 'ai',
+              text: `${feedbackPrefix}已确认艺术基调为「${lightingVal}」！接下来，是否开启「智能空间软装推荐」？\n开启后，AI 将在场景中推荐增加软装饰品或绿植。若关闭，则纯粹进行去杂物清洗与质感提亮。`,
+              type: 'options-decor'
             }
           ]);
         } else {
-          // Fallback
-          setMessages(prev => [
-            ...prev,
-            {
-              id: 'ai-resp-' + Date.now(),
-              sender: 'ai',
-              text: `${feedbackPrefix}您的要求已成功注入后面的渲染重绘中。您可以点击对应的选项或直接开始一键美化 🚀`
-            }
-          ]);
+          // All parameters are collected! Present final summary & action triggers
+          const finalDecor = currentDecor !== null ? currentDecor : allowAdditions;
+          const finalRatio = parsedRatio || options.ratio;
+          const finalResolution = parsedResolution || options.resolution;
+          const finalLighting = currentLighting;
+
+          if (finalDecor === true) {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-decor-items-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}全部设计参数已配置完成！📐比例：${finalRatio} | 💎分辨率：${finalResolution} | 💡艺术基调：${finalLighting}。已开启智能空间配饰推荐点缀！为您定制推荐了以下几项软装升级，您可以自由挑选：`,
+                type: 'decor-checkboxes'
+              }
+            ]);
+          } else {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-beautify-ready-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}全部设计参数配置完成！📐比例：${finalRatio} | 💎分辨率：${finalResolution} | 💡艺术基调：${finalLighting}。我们将保持原有的陈设，纯净清洗除垢，提升材质的高级质感。请确认设计预设无误，点击开始一键美化。`,
+                type: 'beautify-trigger'
+              }
+            ]);
+          }
         }
       }
     }, 800);
@@ -1358,7 +1285,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-[#FDFCFB] text-[#3D3935] font-sans relative overflow-hidden">
+    <div className={`flex flex-col bg-[#FDFCFB] text-[#3D3935] font-sans relative ${mode === 'agent' ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
       <div className="absolute top-[-15%] left-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#E8EDE7] rounded-full blur-[120px] opacity-40 pointer-events-none" />
       <div className="absolute bottom-[-15%] right-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#F5EDE6] rounded-full blur-[120px] opacity-40 pointer-events-none" />
 
@@ -1394,7 +1321,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className={`max-w-7xl w-full mx-auto px-4 sm:px-6 relative z-10 flex flex-col min-h-0 ${mode === 'agent' ? 'py-3 sm:py-4 flex-1 overflow-hidden' : 'py-6 sm:py-12 overflow-y-auto'}`}>
+      <main className={`max-w-7xl w-full mx-auto px-4 sm:px-6 relative z-10 flex flex-col min-h-0 ${mode === 'agent' ? 'py-3 sm:py-4 flex-1 overflow-hidden' : 'py-6 sm:py-12'}`}>
         {mode === 'landing' ? (
           <div className="max-w-5xl mx-auto py-12 sm:py-20 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500">
             {/* Badge */}
