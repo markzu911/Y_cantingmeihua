@@ -710,7 +710,10 @@ export default function App() {
       }
 
       // 2. Resolution
-      if (lowerText.includes('2k') || lowerText.includes('高清') || lowerText.includes('超清') || lowerText.includes('高分辨率')) {
+      if (lowerText.includes('4k') || lowerText.includes('极高分辨率') || lowerText.includes('影院级')) {
+        parsedResolution = '4K';
+        feedback.push('💎 渲染分辨率已设为：4K (影院级超清画质，极致细节)');
+      } else if (lowerText.includes('2k') || lowerText.includes('高清') || lowerText.includes('超清') || lowerText.includes('高分辨率')) {
         parsedResolution = '2K';
         feedback.push('💎 渲染分辨率已设为：2K (极致画质，细节饱满)');
       } else if (lowerText.includes('1k') || lowerText.includes('标清') || lowerText.includes('标准分辨率')) {
@@ -776,7 +779,11 @@ export default function App() {
       }
 
       if (stage === 'options-resolution' && !wasResolutionChosen) {
-        if (lowerText.includes('2k') || lowerText.includes('高') || lowerText.includes('超')) {
+        if (lowerText.includes('4k')) {
+          parsedResolution = '4K';
+          wasResolutionChosen = true;
+          feedback.push('💎 渲染分辨率已设为：4K (影院级超清)');
+        } else if (lowerText.includes('2k') || lowerText.includes('高') || lowerText.includes('超')) {
           parsedResolution = '2K';
           wasResolutionChosen = true;
           feedback.push('💎 渲染分辨率已设为：2K (极致画质)');
@@ -978,7 +985,7 @@ export default function App() {
               {
                 id: 'ai-lighting-ask-' + Date.now(),
                 sender: 'ai',
-                text: `${feedbackPrefix}已确认分辨率为「${parsedResolution || options.resolution}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult.recommendedLighting})`,
+                text: `${feedbackPrefix}已确认分辨率为「${parsedResolution || options.resolution}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult?.recommendedLighting || '暖色调'})`,
                 type: 'options-lighting'
               }
             ]);
@@ -1628,13 +1635,13 @@ export default function App() {
                       {/* Interactive block - Resolution Options */}
                       {msg.type === 'options-resolution' && (
                         <div className="mt-4 flex flex-wrap gap-2">
-                          {['1K', '2K'].map((val) => (
+                          {['1K', '2K', '4K'].map((val) => (
                             <button
                               key={val}
                               onClick={() => handleSelectResolutionInChat(val)}
                               className="px-4 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] rounded-xl text-xs font-bold transition-all transform active:scale-95 text-[#6B6661]"
                             >
-                              {val === '1K' ? '1K (标准清晰度)' : '2K (高清重绘)'}
+                              {val === '1K' ? '1K (标准清晰度)' : val === '2K' ? '2K (高清重绘)' : '4K (极致超清重绘)'}
                             </button>
                           ))}
                         </div>
