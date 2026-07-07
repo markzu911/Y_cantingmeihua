@@ -27,7 +27,7 @@ interface ChatMessage {
   id: string;
   sender: 'ai' | 'user';
   text: string;
-  type?: 'text' | 'image-upload' | 'analysis-result' | 'options-lighting' | 'options-decor' | 'decor-checkboxes' | 'beautify-trigger' | 'loading' | 'result-card' | 'error';
+  type?: 'text' | 'image-upload' | 'analysis-result' | 'options-ratio' | 'options-resolution' | 'options-lighting' | 'options-decor' | 'decor-checkboxes' | 'beautify-trigger' | 'loading' | 'result-card' | 'error';
   image?: string;
   meta?: any;
 }
@@ -383,10 +383,10 @@ export default function App() {
             meta: result
           },
           {
-            id: 'lighting-choice-' + Date.now(),
+            id: 'ratio-choice-' + Date.now(),
             sender: 'ai',
-            text: `请选择一个您期望的「艺术基调（光影优化效果）」：\n(已根据您的餐厅推荐: ${result.recommendedLighting})`,
-            type: 'options-lighting'
+            text: `为了呈现最符合您心意的美化图，请选择您期望的「画面比例（尺寸）」📐：`,
+            type: 'options-ratio'
           }
         ]));
       }
@@ -400,6 +400,44 @@ export default function App() {
         }
       ]));
     }
+  };
+
+  const handleSelectRatioInChat = (ratio: string) => {
+    setOptions(prev => ({ ...prev, ratio }));
+    setIsRatioSelected(true);
+    setMessages(prev => [
+      ...prev,
+      {
+        id: 'user-ratio-' + Date.now(),
+        sender: 'user',
+        text: `画面比例：${ratio}`
+      },
+      {
+        id: 'ai-resolution-ask-' + Date.now(),
+        sender: 'ai',
+        text: `已确认画面比例为「${ratio}」！接下来，请选择您需要的「画面清晰度（分辨率）」💎：`,
+        type: 'options-resolution'
+      }
+    ]);
+  };
+
+  const handleSelectResolutionInChat = (resolution: string) => {
+    setOptions(prev => ({ ...prev, resolution }));
+    setIsResolutionSelected(true);
+    setMessages(prev => [
+      ...prev,
+      {
+        id: 'user-resolution-' + Date.now(),
+        sender: 'user',
+        text: `画面清晰度：${resolution}`
+      },
+      {
+        id: 'ai-lighting-ask-' + Date.now(),
+        sender: 'ai',
+        text: `已确认分辨率为「${resolution}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult?.recommendedLighting || '暖色调'})`,
+        type: 'options-lighting'
+      }
+    ]);
   };
 
   const handleSelectLightingInChat = (lighting: string) => {
@@ -614,6 +652,10 @@ export default function App() {
     setHistory([]);
     setCustomRequirements([]);
     setError(null);
+    setIsRatioSelected(false);
+    setIsResolutionSelected(false);
+    setIsLightingSelected(false);
+    setIsDecorSelected(false);
     setMessages([
       {
         id: 'welcome-' + Date.now(),
@@ -700,6 +742,8 @@ export default function App() {
       // Local tracking variables for this turn
       let currentLighting = options.lighting;
       let currentDecor: boolean | null = allowAdditions;
+      let wasRatioChosen = !!parsedRatio;
+      let wasResolutionChosen = !!parsedResolution;
       let wasLightingChosen = !!parsedLighting;
       let wasDecorChosen = parsedDecor !== null;
 
@@ -707,6 +751,42 @@ export default function App() {
       const stage = lastAiMsg?.type || 'text';
 
       // Stage-specific implicit parsing
+      if (stage === 'options-ratio' && !wasRatioChosen) {
+        if (lowerText.includes('1:1') || lowerText.includes('1比1') || lowerText.includes('正方形')) {
+          parsedRatio = '1:1';
+          wasRatioChosen = true;
+          feedback.push('📐 画面比例已设为：1:1 (正方形)');
+        } else if (lowerText.includes('16:9') || lowerText.includes('16比9')) {
+          parsedRatio = '16:9';
+          wasRatioChosen = true;
+          feedback.push('📐 画面比例已设为：16:9 (横屏)');
+        } else if (lowerText.includes('4:3') || lowerText.includes('4比3')) {
+          parsedRatio = '4:3';
+          wasRatioChosen = true;
+          feedback.push('📐 画面比例已设为：4:3 (标准横屏)');
+        } else if (lowerText.includes('3:4') || lowerText.includes('3比4')) {
+          parsedRatio = '3:4';
+          wasRatioChosen = true;
+          feedback.push('📐 画面比例已设为：3:4 (标准竖屏)');
+        } else if (lowerText.includes('9:16') || lowerText.includes('9比16')) {
+          parsedRatio = '9:16';
+          wasRatioChosen = true;
+          feedback.push('📐 画面比例已设为：9:16 (手机竖屏)');
+        }
+      }
+
+      if (stage === 'options-resolution' && !wasResolutionChosen) {
+        if (lowerText.includes('2k') || lowerText.includes('高') || lowerText.includes('超')) {
+          parsedResolution = '2K';
+          wasResolutionChosen = true;
+          feedback.push('💎 渲染分辨率已设为：2K (极致画质)');
+        } else if (lowerText.includes('1k') || lowerText.includes('标') || lowerText.includes('标准')) {
+          parsedResolution = '1K';
+          wasResolutionChosen = true;
+          feedback.push('⚡ 渲染分辨率已设为：1K (标准画质)');
+        }
+      }
+
       if (stage === 'options-lighting' && !wasLightingChosen) {
         if (lowerText.includes('暖') || lowerText.includes('黄') || lowerText.includes('温馨')) {
           parsedLighting = '暖色调';
@@ -869,7 +949,51 @@ export default function App() {
           : '';
 
         // Dialog State Machine
-        if (stage === 'options-lighting') {
+        if (stage === 'options-ratio') {
+          if (wasRatioChosen) {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-resolution-ask-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}已确认画面比例为「${parsedRatio || options.ratio}」！接下来，请选择您需要的「画面清晰度（分辨率）」💎：`,
+                type: 'options-resolution'
+              }
+            ]);
+          } else {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-ratio-ask-again-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}为了呈现最符合您心意的美化图，请选择您期望的「画面比例（尺寸）」📐：`,
+                type: 'options-ratio'
+              }
+            ]);
+          }
+        } else if (stage === 'options-resolution') {
+          if (wasResolutionChosen) {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-lighting-ask-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}已确认分辨率为「${parsedResolution || options.resolution}」！接下来，请选择您期望的「艺术基调（光影优化效果）」💡：\n(已根据您的餐厅推荐: ${analysisResult.recommendedLighting})`,
+                type: 'options-lighting'
+              }
+            ]);
+          } else {
+            setMessages(prev => [
+              ...prev,
+              {
+                id: 'ai-resolution-ask-again-' + Date.now(),
+                sender: 'ai',
+                text: `${feedbackPrefix}请选择您需要的「画面清晰度（分辨率）」💎：`,
+                type: 'options-resolution'
+              }
+            ]);
+          }
+        } else if (stage === 'options-lighting') {
           if (wasLightingChosen) {
             if (wasDecorChosen) {
               if (currentDecor === true) {
@@ -1227,11 +1351,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FDFCFB] text-[#3D3935] font-sans relative overflow-x-hidden">
+    <div className="h-screen flex flex-col bg-[#FDFCFB] text-[#3D3935] font-sans relative overflow-hidden">
       <div className="absolute top-[-15%] left-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#E8EDE7] rounded-full blur-[120px] opacity-40 pointer-events-none" />
       <div className="absolute bottom-[-15%] right-[-10%] w-[70%] sm:w-[50%] h-[50%] bg-[#F5EDE6] rounded-full blur-[120px] opacity-40 pointer-events-none" />
 
-      <header className="bg-white/60 backdrop-blur-xl border-b border-[#EAE3DC] sticky top-0 z-50">
+      <header className="bg-white/60 backdrop-blur-xl border-b border-[#EAE3DC] sticky top-0 z-50 shrink-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 sm:h-20 flex items-center justify-between">
           <div 
             className="flex items-center gap-2 sm:gap-3 cursor-pointer group hover:opacity-85 transition-opacity"
@@ -1263,7 +1387,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-12 relative z-10">
+      <main className={`max-w-7xl w-full mx-auto px-4 sm:px-6 relative z-10 flex flex-col min-h-0 ${mode === 'agent' ? 'py-3 sm:py-4 flex-1 overflow-hidden' : 'py-6 sm:py-12 overflow-y-auto'}`}>
         {mode === 'landing' ? (
           <div className="max-w-5xl mx-auto py-12 sm:py-20 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-500">
             {/* Badge */}
@@ -1370,7 +1494,7 @@ export default function App() {
             )}
 
             {mode === 'agent' ? (
-          <div className="max-w-4xl mx-auto flex flex-col bg-white/70 backdrop-blur-xl border border-[#EAE3DC] rounded-3xl overflow-hidden shadow-[0_20px_50px_rgba(141,163,153,0.06)] h-[680px]">
+          <div className="flex-1 w-full max-w-4xl mx-auto flex flex-col bg-white/70 backdrop-blur-xl border border-[#EAE3DC] rounded-3xl overflow-hidden shadow-[0_20px_50px_rgba(141,163,153,0.06)] min-h-0">
             {/* Live Design Parameters & Custom Requirements Summary */}
             <div className="bg-[#FBF9F6] border-b border-[#EAE3DC] px-4 py-2.5 sm:px-6 flex flex-wrap items-center justify-between gap-3 text-xs text-[#6B6661]">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
@@ -1422,8 +1546,8 @@ export default function App() {
                       {msg.text.split('\n').map((line, i) => <p key={i}>{line}</p>)}
                       
                       {/* Image Preview inside text */}
-                      {msg.image && (
-                        <div className="mt-3 rounded-xl overflow-hidden border border-[#EAE3DC] max-w-sm cursor-pointer" onClick={() => { if (msg.type !== 'image-upload') { setBeautifiedImage(msg.image); setIsModalOpen(true); } }}>
+                      {msg.image && msg.type !== 'result-card' && (
+                        <div className="mt-3 rounded-xl overflow-hidden border border-[#EAE3DC] max-w-sm cursor-pointer" onClick={() => { if (msg.type !== 'image-upload') { setBeautifiedImage(msg.image!); setIsModalOpen(true); } }}>
                           <img src={msg.image} alt="Message attach" className="w-full max-h-48 object-cover" />
                         </div>
                       )}
@@ -1483,6 +1607,36 @@ export default function App() {
                               </div>
                             ))}
                           </div>
+                        </div>
+                      )}
+
+                      {/* Interactive block - Ratio Options */}
+                      {msg.type === 'options-ratio' && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {['1:1', '16:9', '4:3', '3:4', '9:16'].map((val) => (
+                            <button
+                              key={val}
+                              onClick={() => handleSelectRatioInChat(val)}
+                              className="px-4 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] rounded-xl text-xs font-bold transition-all transform active:scale-95 text-[#6B6661]"
+                            >
+                              {val === '1:1' ? '1:1 (正方形比例)' : val === '16:9' ? '16:9 (横屏比例)' : val === '4:3' ? '4:3 (标准横屏)' : val === '3:4' ? '3:4 (标准竖屏)' : '9:16 (手机竖屏)'}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Interactive block - Resolution Options */}
+                      {msg.type === 'options-resolution' && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {['1K', '2K'].map((val) => (
+                            <button
+                              key={val}
+                              onClick={() => handleSelectResolutionInChat(val)}
+                              className="px-4 py-2 bg-[#F2F0ED] hover:bg-[#3D3935] hover:text-white border border-[#EAE3DC] rounded-xl text-xs font-bold transition-all transform active:scale-95 text-[#6B6661]"
+                            >
+                              {val === '1K' ? '1K (标准清晰度)' : '2K (高清重绘)'}
+                            </button>
+                          ))}
                         </div>
                       )}
 
