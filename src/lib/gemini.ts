@@ -9,13 +9,14 @@ export interface AnalysisResult {
   recommendedAdditions: { item: string; reason: string; enabled: boolean }[];
 }
 
-export async function analyzeRestaurantImage(base64Image: string, mimeType: string): Promise<AnalysisResult> {
+export async function analyzeRestaurantImage(base64Image: string, mimeType: string, signal?: AbortSignal): Promise<AnalysisResult> {
   const response = await fetch("/api/analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ base64Image, mimeType }),
+    signal,
   });
 
   if (!response.ok) {
@@ -41,7 +42,8 @@ export async function beautifyRestaurantImage(
   analysis: AnalysisResult,
   options: { ratio: string; lighting: string; resolution: string },
   allowAdditions: boolean,
-  customRequirements?: string[]
+  customRequirements?: string[],
+  signal?: AbortSignal
 ): Promise<string> {
   const response = await fetch("/api/beautify", {
     method: "POST",
@@ -56,6 +58,7 @@ export async function beautifyRestaurantImage(
       allowAdditions,
       customRequirements,
     }),
+    signal,
   });
 
   if (!response.ok) {

@@ -58,6 +58,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [customRequirements, setCustomRequirements] = useState<string[]>([]);
   const [inputMessage, setInputMessage] = useState('');
+  const [messageQueue, setMessageQueue] = useState<{ id: string, text: string }[]>([]);
 
   // User custom selections tracking
   const [isRatioSelected, setIsRatioSelected] = useState(false);
@@ -75,6 +76,9 @@ export default function App() {
     options: { ratio: string; lighting: string; resolution: string };
     allowAdditions: boolean;
   } | null>(null);
+
+  // Controller for aborting generation
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // SaaS Integration State
   const [userId, setUserId] = useState<string | null>(null);
@@ -337,8 +341,10 @@ export default function App() {
       }
     }
 
+    abortControllerRef.current = new AbortController();
+
     try {
-      const result = await analyzeRestaurantImage(base64, mimeType);
+      const result = await analyzeRestaurantImage(base64, mimeType, abortControllerRef.current.signal);
       setAnalysisResult(result);
       
       const recommendedLighting = result.recommendedLighting && ['暖色调', '清新浅色', '高端暗色'].includes(result.recommendedLighting)
@@ -390,6 +396,9 @@ export default function App() {
         ]));
       }
     } catch (err: any) {
+      if (err.name === 'AbortError') {
+        return; // Aborted by user
+      }
       setMessages(prev => prev.filter(m => m.id !== analysisLoadingId).concat([
         {
           id: 'err-' + Date.now(),
@@ -398,6 +407,10 @@ export default function App() {
           type: 'error'
         }
       ]));
+    } finally {
+      if (abortControllerRef.current) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -539,13 +552,15 @@ export default function App() {
     }
 
     try {
+      abortControllerRef.current = new AbortController();
       const resultImageBase64 = await beautifyRestaurantImage(
         originalImage.base64,
         originalImage.mimeType,
         finalAnalysisResult,
         optionsOverride || options,
         allowAdditionsOverride !== undefined ? allowAdditionsOverride : allowAdditions,
-        customRequirements
+        customRequirements,
+        abortControllerRef.current.signal
       );
 
       setBeautifiedImage(resultImageBase64);
@@ -627,6 +642,9 @@ export default function App() {
       ]));
 
     } catch (err: any) {
+      if (err.name === 'AbortError') {
+        return; // Aborted by user
+      }
       const errorMsg = err.message || '';
       let displayedError = '美化重绘失败，请稍后重试。';
       if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('Requested entity was not found')) {
@@ -641,6 +659,10 @@ export default function App() {
           type: 'error'
         }
       ]));
+    } finally {
+      if (abortControllerRef.current) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -665,22 +687,75 @@ export default function App() {
     ]);
   };
 
-  const handleSendMessage = (text: string) => {
+  // Process message queue when generation finishes
+  useEffect(() => {
+    if (!isBeautifying && !isAnalyzing && messageQueue.length > 0) {
+      const nextMessage = messageQueue[0];
+      setMessageQueue(prev => prev.slice(1));
+      handleSendMessage(nextMessage.text, true);
+    }
+  }, [isBeautifying, isAnalyzing, messageQueue]);
+
+  const handleSendMessage = (text: string, isFromQueue: boolean = false) => {
     if (!text.trim()) return;
     
-    const userMsgId = 'user-text-' + Date.now();
-    setMessages(prev => [
-      ...prev,
-      {
-        id: userMsgId,
-        sender: 'user',
-        text
-      }
-    ]);
-    setInputMessage('');
+    let userMsgId = 'user-text-' + Date.now();
+    if (!isFromQueue) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: userMsgId,
+          sender: 'user',
+          text
+        }
+      ]);
+      setInputMessage('');
+    }
 
     setTimeout(() => {
       const lowerText = text.toLowerCase();
+
+      // Check if image is generating
+      if (isBeautifying || isAnalyzing) {
+        const stopKeywords = ["停止", "取消", "终止", "不画了", "停下", "中断", "stop", "cancel", "abort"];
+        const isStop = stopKeywords.some(kw => lowerText.includes(kw));
+
+        if (isStop) {
+          if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+          }
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-aborted-' + Date.now(),
+              sender: 'ai',
+              text: '✨ 已为您停止生成。您可以随时修改需求后重新生成。',
+              type: 'text'
+            }
+          ]);
+          setIsBeautifying(false);
+          setIsAnalyzing(false);
+          
+          // Remove loading messages
+          setMessages(prev => prev.filter(msg => msg.type !== 'loading'));
+          return;
+        } else {
+          setMessages(prev => [
+            ...prev,
+            {
+              id: 'ai-busy-' + Date.now(),
+              sender: 'ai',
+              text: '图片正在努力生成中 🎨，您的需求我已记下，将在生成完毕后为您处理！如果想要中止生成，可以说「停止」。',
+              type: 'text'
+            }
+          ]);
+          
+          // Queue requirement for after generation if it's not a stop command
+          setMessageQueue(prev => [...prev, { id: 'user-text-' + Date.now(), text }]);
+          return;
+        }
+      }
 
       // Intercept add/delete suggestion commands
       if (analysisResult) {
